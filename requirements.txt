@@ -1,3 +1,6 @@
 streamlit
 supabase
 pandas
+fpdf2
+openpyxl
+urllib3
