@@ -1,13 +1,10 @@
-# app.py
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date, timedelta
-from supabase import create_client, Client
 import uuid
 import base64
-import hashlib
-import json
 import time
+import json
 
 # ============================================================
 # PAGE CONFIG
@@ -22,17 +19,23 @@ st.set_page_config(
 # ============================================================
 # SUPABASE CONNECTION
 # ============================================================
-SUPABASE_URL = st.secrets["SUPABASE_URL"]
-SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
-
-@st.cache_resource
-def get_supabase_client():
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
-
-supabase: Client = get_supabase_client()
+try:
+    from supabase import create_client, Client
+    SUPABASE_URL = st.secrets["SUPABASE_URL"]
+    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+    
+    @st.cache_resource
+    def get_supabase_client():
+        return create_client(SUPABASE_URL, SUPABASE_KEY)
+    
+    supabase: Client = get_supabase_client()
+    DB_CONNECTED = True
+except Exception as e:
+    DB_CONNECTED = False
+    st.error(f"Database connection failed: {str(e)}")
 
 # ============================================================
-# NATCHATHIRAM LIST
+# CONSTANTS
 # ============================================================
 NATCHATHIRAM_LIST = [
     "அசுவினி (Ashwini)", "பரணி (Bharani)", "கார்த்திகை (Karthigai)",
@@ -43,11 +46,16 @@ NATCHATHIRAM_LIST = [
     "விசாகம் (Vishakha)", "அனுஷம் (Anuradha)", "கேட்டை (Jyeshtha)",
     "மூலம் (Mula)", "பூராடம் (Purva Ashadha)", "உத்திராடம் (Uttara Ashadha)",
     "திருவோணம் (Shravana)", "அவிட்டம் (Dhanishta)", "சதயம் (Shatabhisha)",
-    "பூரட்டாதி (Purva Bhadrapada)", "உத்திரட்டாதி (Uttara Bhadrapada)", "ரேவதி (Revati)"
+    "பூரட்டாதி (Purva Bhadrapada)", "உத்திரட்டாதி (Uttara Bhadrapada)",
+    "ரேவதி (Revati)"
 ]
 
-RELATION_TYPES = ["Self", "Spouse", "Son", "Daughter", "Father", "Mother", 
-                  "Brother", "Sister", "Grandfather", "Grandmother", "Other"]
+RELATION_TYPES = [
+    "Self", "Spouse", "Son", "Daughter", "Father", "Mother",
+    "Brother", "Sister", "Grandfather", "Grandmother",
+    "Father-in-law", "Mother-in-law", "Son-in-law",
+    "Daughter-in-law", "Uncle", "Aunt", "Nephew", "Niece", "Other"
+]
 
 # ============================================================
 # CUSTOM CSS
@@ -55,239 +63,203 @@ RELATION_TYPES = ["Self", "Spouse", "Son", "Daughter", "Father", "Mother",
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
-    
     * { font-family: 'Poppins', sans-serif; }
     
     .main-header {
         background: linear-gradient(135deg, #ff6b35 0%, #f7c948 50%, #ff6b35 100%);
-        padding: 20px;
-        border-radius: 15px;
-        text-align: center;
-        margin-bottom: 20px;
-        box-shadow: 0 4px 15px rgba(255, 107, 53, 0.3);
+        padding: 20px; border-radius: 15px; text-align: center;
+        margin-bottom: 20px; box-shadow: 0 4px 15px rgba(255,107,53,0.3);
     }
-    .main-header h1 {
-        color: #8B0000;
-        font-size: 2.2em;
-        margin: 0;
-        text-shadow: 1px 1px 2px rgba(0,0,0,0.1);
-    }
-    .main-header p {
-        color: #5a1a00;
-        font-size: 1em;
-        margin: 5px 0 0 0;
-    }
+    .main-header h1 { color: #8B0000; font-size: 2.2em; margin: 0; }
+    .main-header p { color: #5a1a00; font-size: 1em; margin: 5px 0 0 0; }
     
     .metric-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 20px;
-        border-radius: 12px;
-        color: white;
-        text-align: center;
-        margin: 5px;
-        box-shadow: 0 4px 10px rgba(0,0,0,0.15);
+        padding: 20px; border-radius: 12px; color: white;
+        text-align: center; margin: 5px; box-shadow: 0 4px 10px rgba(0,0,0,0.15);
     }
-    .metric-card.income {
-        background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
-    }
-    .metric-card.expense {
-        background: linear-gradient(135deg, #eb3349 0%, #f45c43 100%);
-    }
-    .metric-card.balance {
-        background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
-    }
-    .metric-card h3 { margin: 0; font-size: 0.9em; opacity: 0.9; }
-    .metric-card h2 { margin: 5px 0 0 0; font-size: 1.8em; }
+    .metric-card.income { background: linear-gradient(135deg, #11998e, #38ef7d); }
+    .metric-card.expense { background: linear-gradient(135deg, #eb3349, #f45c43); }
+    .metric-card.balance { background: linear-gradient(135deg, #4facfe, #00f2fe); }
+    .metric-card.info { background: linear-gradient(135deg, #667eea, #764ba2); }
+    .metric-card h3 { margin: 0; font-size: 0.85em; opacity: 0.9; }
+    .metric-card h2 { margin: 5px 0 0 0; font-size: 1.7em; }
     
-    .news-ticker {
+    .news-ticker-wrapper {
         background: linear-gradient(90deg, #1a1a2e, #16213e, #0f3460);
-        color: #f7c948;
-        padding: 12px 20px;
-        border-radius: 10px;
-        overflow: hidden;
-        white-space: nowrap;
-        font-size: 1em;
-        margin: 10px 0;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        padding: 12px 20px; border-radius: 10px; overflow: hidden;
+        white-space: nowrap; margin: 10px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.2);
     }
-    .news-ticker .ticker-content {
-        display: inline-block;
-        animation: ticker 30s linear infinite;
+    .news-ticker-text {
+        display: inline-block; color: #f7c948; font-size: 1em;
+        animation: scroll-left 35s linear infinite;
     }
-    @keyframes ticker {
+    @keyframes scroll-left {
         0% { transform: translateX(100%); }
-        100% { transform: translateX(-100%); }
+        100% { transform: translateX(-200%); }
     }
     
     .pooja-card {
-        background: linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%);
-        padding: 15px;
-        border-radius: 10px;
-        margin: 5px 0;
+        background: linear-gradient(135deg, #ffecd2, #fcb69f);
+        padding: 12px 15px; border-radius: 10px; margin: 5px 0;
         border-left: 4px solid #ff6b35;
     }
-    
     .birthday-card {
-        background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%);
-        padding: 10px 15px;
-        border-radius: 10px;
-        margin: 5px 0;
+        background: linear-gradient(135deg, #a8edea, #fed6e3);
+        padding: 10px 15px; border-radius: 10px; margin: 5px 0;
         border-left: 4px solid #e91e63;
     }
-    
-    .stButton > button {
-        border-radius: 8px;
-        font-weight: 500;
+    .bill-preview {
+        background: #fffdf7; padding: 30px; border: 2px solid #ff6b35;
+        border-radius: 15px; max-width: 550px; margin: 20px auto;
     }
-    
-    .sidebar .sidebar-content {
-        background: linear-gradient(180deg, #1a1a2e 0%, #16213e 100%);
+    .bill-header {
+        text-align: center; border-bottom: 2px solid #ff6b35; padding-bottom: 15px;
+    }
+    .success-box {
+        background: #d4edda; border: 1px solid #c3e6cb; padding: 15px;
+        border-radius: 10px; color: #155724; margin: 10px 0;
     }
     
     div[data-testid="stSidebar"] {
         background: linear-gradient(180deg, #1a1a2e 0%, #16213e 100%);
     }
-    
-    .success-box {
-        background: #d4edda;
-        border: 1px solid #c3e6cb;
-        padding: 15px;
-        border-radius: 10px;
-        color: #155724;
-        margin: 10px 0;
+    div[data-testid="stSidebar"] .stButton > button {
+        width: 100%; text-align: left; background: transparent;
+        color: #f0f0f0; border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 8px; margin: 2px 0; padding: 8px 15px;
+        transition: all 0.3s ease;
     }
-    
-    .warning-box {
-        background: #fff3cd;
-        border: 1px solid #ffeeba;
-        padding: 15px;
-        border-radius: 10px;
-        color: #856404;
-        margin: 10px 0;
+    div[data-testid="stSidebar"] .stButton > button:hover {
+        background: rgba(255,107,53,0.3); border-color: #ff6b35;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # ============================================================
-# SESSION STATE INITIALIZATION
+# SESSION STATE
 # ============================================================
-if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = False
-if 'username' not in st.session_state:
-    st.session_state.username = ""
-if 'user_role' not in st.session_state:
-    st.session_state.user_role = ""
-if 'current_page' not in st.session_state:
-    st.session_state.current_page = "Dashboard"
+defaults = {
+    'logged_in': False, 'username': '', 'user_role': '',
+    'current_page': 'Dashboard'
+}
+for key, val in defaults.items():
+    if key not in st.session_state:
+        st.session_state[key] = val
 
 # ============================================================
-# HELPER FUNCTIONS
+# DATABASE HELPER FUNCTIONS
 # ============================================================
-def safe_query(table, select="*", filters=None):
-    """Safe database query with error handling"""
+def db_select(table, columns="*", filters=None, gte_filters=None, lte_filters=None):
+    """Select from database with optional filters"""
     try:
-        query = supabase.table(table).select(select)
+        query = supabase.table(table).select(columns)
         if filters:
-            for key, value in filters.items():
-                query = query.eq(key, value)
+            for k, v in filters.items():
+                query = query.eq(k, v)
+        if gte_filters:
+            for k, v in gte_filters.items():
+                query = query.gte(k, str(v))
+        if lte_filters:
+            for k, v in lte_filters.items():
+                query = query.lte(k, str(v))
         result = query.execute()
         return result.data if result.data else []
     except Exception as e:
-        st.error(f"Database error: {str(e)}")
+        st.error(f"DB Select Error on {table}: {e}")
         return []
 
-def safe_insert(table, data):
-    """Safe database insert"""
+def db_insert(table, data):
+    """Insert into database"""
     try:
         result = supabase.table(table).insert(data).execute()
-        return result.data
+        return result.data if result.data else None
     except Exception as e:
-        st.error(f"Insert error: {str(e)}")
+        st.error(f"DB Insert Error on {table}: {e}")
         return None
 
-def safe_update(table, data, match_field, match_value):
-    """Safe database update"""
+def db_update(table, data, match_col, match_val):
+    """Update database record"""
     try:
-        result = supabase.table(table).update(data).eq(match_field, match_value).execute()
-        return result.data
+        result = supabase.table(table).update(data).eq(match_col, match_val).execute()
+        return result.data if result.data else None
     except Exception as e:
-        st.error(f"Update error: {str(e)}")
+        st.error(f"DB Update Error on {table}: {e}")
         return None
 
-def safe_delete(table, match_field, match_value):
-    """Safe database delete"""
+def db_delete(table, match_col, match_val):
+    """Delete database record"""
     try:
-        result = supabase.table(table).delete().eq(match_field, match_value).execute()
-        return result.data
+        result = supabase.table(table).delete().eq(match_col, match_val).execute()
+        return True
     except Exception as e:
-        st.error(f"Delete error: {str(e)}")
-        return None
+        st.error(f"DB Delete Error on {table}: {e}")
+        return False
 
-def upload_to_supabase_storage(file, bucket, path):
-    """Upload file and return public URL - stores as base64 in description field"""
-    try:
-        file_bytes = file.read()
-        encoded = base64.b64encode(file_bytes).decode()
-        return f"data:{file.type};base64,{encoded}"
-    except Exception as e:
-        st.error(f"Upload error: {str(e)}")
-        return None
+def file_to_base64(uploaded_file):
+    """Convert uploaded file to base64 string for storage"""
+    if uploaded_file is not None:
+        bytes_data = uploaded_file.getvalue()
+        encoded = base64.b64encode(bytes_data).decode()
+        return f"data:{uploaded_file.type};base64,{encoded}"
+    return None
 
-def get_today_birthdays():
-    """Get today's birthdays from devotees and family members"""
+def get_income(start, end):
+    """Get total income between dates"""
+    bills = db_select("bills", "amount", gte_filters={"bill_date": start}, lte_filters={"bill_date": end})
+    return sum(float(b.get('amount', 0)) for b in bills)
+
+def get_expense(start, end):
+    """Get total expenses between dates"""
+    exps = db_select("expenses", "amount", gte_filters={"expense_date": start}, lte_filters={"expense_date": end})
+    return sum(float(e.get('amount', 0)) for e in exps)
+
+def get_period_dates(period):
+    """Get start and end dates for given period"""
     today = date.today()
-    birthdays = []
+    if period == "Daily":
+        return today, today
+    elif period == "Weekly":
+        return today - timedelta(days=today.weekday()), today
+    elif period == "Monthly":
+        return today.replace(day=1), today
+    elif period == "Yearly":
+        return today.replace(month=1, day=1), today
+    return today, today
+
+def get_todays_birthdays():
+    """Get birthday list for today"""
+    today = date.today()
+    bdays = []
     
-    devotees = safe_query("devotees")
-    for d in devotees:
+    for d in db_select("devotees", "name, dob"):
         if d.get('dob'):
             try:
-                dob = datetime.strptime(d['dob'], '%Y-%m-%d').date()
+                dob = datetime.strptime(str(d['dob']), '%Y-%m-%d').date()
                 if dob.month == today.month and dob.day == today.day:
-                    birthdays.append({"name": d['name'], "type": "Devotee"})
+                    bdays.append(f"🎂 {d['name']} (Devotee)")
             except:
                 pass
     
-    members = safe_query("family_members")
-    for m in members:
+    for m in db_select("family_members", "name, dob"):
         if m.get('dob'):
             try:
-                dob = datetime.strptime(m['dob'], '%Y-%m-%d').date()
+                dob = datetime.strptime(str(m['dob']), '%Y-%m-%d').date()
                 if dob.month == today.month and dob.day == today.day:
-                    birthdays.append({"name": m['name'], "type": "Family Member"})
+                    bdays.append(f"🎂 {m['name']} (Family)")
             except:
                 pass
     
-    return birthdays
+    return bdays
 
-def get_income_for_period(start_date, end_date):
-    """Get total income for a date range"""
-    try:
-        result = supabase.table("bills").select("amount, bill_date").gte("bill_date", str(start_date)).lte("bill_date", str(end_date)).execute()
-        if result.data:
-            return sum(float(b.get('amount', 0)) for b in result.data)
-        return 0
-    except:
-        return 0
-
-def get_expenses_for_period(start_date, end_date):
-    """Get total expenses for a date range"""
-    try:
-        result = supabase.table("expenses").select("amount, expense_date").gte("expense_date", str(start_date)).lte("expense_date", str(end_date)).execute()
-        if result.data:
-            return sum(float(e.get('amount', 0)) for e in result.data)
-        return 0
-    except:
-        return 0
-
-def generate_bill_no():
+def gen_bill_no():
     """Generate unique bill number"""
-    return f"BILL-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    return f"TMS-{datetime.now().strftime('%Y%m%d%H%M%S')}-{str(uuid.uuid4())[:4].upper()}"
+
 
 # ============================================================
-# LOGIN PAGE
+# PAGE: LOGIN
 # ============================================================
-def login_page():
+def page_login():
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.markdown("""
@@ -297,452 +269,397 @@ def login_page():
         </div>
         """, unsafe_allow_html=True)
         
-        st.markdown("### 🔐 Login")
+        st.markdown("")
+        st.markdown("#### 🔐 Please Login to Continue")
         
         with st.form("login_form"):
-            username = st.text_input("👤 Username", placeholder="Enter username")
-            password = st.text_input("🔑 Password", type="password", placeholder="Enter password")
-            submitted = st.form_submit_button("🚀 Login", use_container_width=True)
+            username = st.text_input("👤 Username", placeholder="Enter your username")
+            password = st.text_input("🔑 Password", type="password", placeholder="Enter your password")
+            col_a, col_b, col_c = st.columns([1, 2, 1])
+            with col_b:
+                submitted = st.form_submit_button("🚀 Login", use_container_width=True)
             
             if submitted:
-                if username and password:
-                    users = safe_query("users", filters={"username": username})
+                if not username or not password:
+                    st.warning("⚠️ Please enter both username and password!")
+                elif not DB_CONNECTED:
+                    st.error("❌ Database not connected! Check Supabase credentials.")
+                else:
+                    users = db_select("users", filters={"username": username})
                     if users and users[0].get('password_hash') == password:
                         st.session_state.logged_in = True
                         st.session_state.username = username
                         st.session_state.user_role = users[0].get('role', 'user')
-                        st.success("✅ Login successful!")
-                        time.sleep(1)
+                        st.success("✅ Login successful! Redirecting...")
+                        time.sleep(0.5)
                         st.rerun()
                     else:
                         st.error("❌ Invalid username or password!")
-                else:
-                    st.warning("⚠️ Please enter both username and password!")
+        
+        st.markdown("""
+        <div style="text-align:center; margin-top:20px; color:#888; font-size:0.85em;">
+            Default: admin / admin123
+        </div>
+        """, unsafe_allow_html=True)
+
 
 # ============================================================
-# DASHBOARD PAGE
+# PAGE: DASHBOARD
 # ============================================================
-def dashboard_page():
+def page_dashboard():
     st.markdown("""
     <div class="main-header">
         <h1>🛕 Temple Management Dashboard</h1>
-        <p>🙏 ஓம் நமசிவாய - Welcome to Temple Management System 🙏</p>
+        <p>🙏 ஓம் நமசிவாய - Om Namah Shivaya 🙏</p>
     </div>
     """, unsafe_allow_html=True)
     
-    # --- News Ticker with Birthday Wishes ---
-    birthdays = get_today_birthdays()
-    news_items = safe_query("news_ticker", filters={"is_active": True})
-    
+    # --- News Ticker ---
     ticker_parts = []
+    birthdays = get_todays_birthdays()
     if birthdays:
-        bday_names = " 🎂 ".join([f"🎉 Happy Birthday {b['name']}!" for b in birthdays])
-        ticker_parts.append(bday_names)
-    if news_items:
-        news_text = " 📢 ".join([n['message'] for n in news_items])
-        ticker_parts.append(news_text)
+        ticker_parts.extend(birthdays)
+    
+    news = db_select("news_ticker", filters={"is_active": True})
+    for n in news:
+        ticker_parts.append(f"📢 {n['message']}")
+    
     if not ticker_parts:
-        ticker_parts.append("🛕 Welcome to Temple Management System 🙏 May God Bless You! 🙏")
+        ticker_parts.append("🛕 Welcome to Temple Management System! 🙏 May God Bless Everyone! 🙏")
     
-    ticker_text = " &nbsp;&nbsp;&nbsp; ⭐ &nbsp;&nbsp;&nbsp; ".join(ticker_parts)
-    
+    ticker_str = " &nbsp;&nbsp; ⭐ &nbsp;&nbsp; ".join(ticker_parts)
     st.markdown(f"""
-    <div class="news-ticker">
-        <div class="ticker-content">
-            {ticker_text}
-        </div>
+    <div class="news-ticker-wrapper">
+        <div class="news-ticker-text">{ticker_str}</div>
     </div>
     """, unsafe_allow_html=True)
     
-    # --- Period Selection ---
-    st.markdown("---")
-    period = st.selectbox("📅 Select Period", ["Daily", "Weekly", "Monthly", "Yearly"], index=0)
+    # --- Period Selector ---
+    st.markdown("")
+    period = st.selectbox("📅 Select Period", ["Daily", "Weekly", "Monthly", "Yearly"])
+    start_dt, end_dt = get_period_dates(period)
     
-    today = date.today()
-    if period == "Daily":
-        start_date = today
-        end_date = today
-    elif period == "Weekly":
-        start_date = today - timedelta(days=today.weekday())
-        end_date = today
-    elif period == "Monthly":
-        start_date = today.replace(day=1)
-        end_date = today
-    else:  # Yearly
-        start_date = today.replace(month=1, day=1)
-        end_date = today
-    
-    income = get_income_for_period(start_date, end_date)
-    expenses = get_expenses_for_period(start_date, end_date)
-    balance = income - expenses
+    income = get_income(start_dt, end_dt)
+    expense = get_expense(start_dt, end_dt)
+    balance = income - expense
+    total_devotees = len(db_select("devotees", "id"))
     
     # --- Metric Cards ---
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.markdown(f"""
-        <div class="metric-card income">
-            <h3>💰 {period} Income</h3>
-            <h2>₹ {income:,.2f}</h2>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col2:
-        st.markdown(f"""
-        <div class="metric-card expense">
-            <h3>💸 {period} Expenses</h3>
-            <h2>₹ {expenses:,.2f}</h2>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col3:
-        st.markdown(f"""
-        <div class="metric-card balance">
-            <h3>💎 {period} Balance</h3>
-            <h2>₹ {balance:,.2f}</h2>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col4:
-        total_devotees = len(safe_query("devotees"))
-        st.markdown(f"""
-        <div class="metric-card">
-            <h3>👥 Total Devotees</h3>
-            <h2>{total_devotees}</h2>
-        </div>
-        """, unsafe_allow_html=True)
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown(f'<div class="metric-card income"><h3>💰 {period} Income</h3><h2>₹ {income:,.2f}</h2></div>', unsafe_allow_html=True)
+    with c2:
+        st.markdown(f'<div class="metric-card expense"><h3>💸 {period} Expenses</h3><h2>₹ {expense:,.2f}</h2></div>', unsafe_allow_html=True)
+    with c3:
+        st.markdown(f'<div class="metric-card balance"><h3>💎 {period} Balance</h3><h2>₹ {balance:,.2f}</h2></div>', unsafe_allow_html=True)
+    with c4:
+        st.markdown(f'<div class="metric-card info"><h3>👥 Total Devotees</h3><h2>{total_devotees}</h2></div>', unsafe_allow_html=True)
     
     st.markdown("---")
     
-    # --- Two Column Layout ---
     col_left, col_right = st.columns(2)
     
+    # --- Birthdays ---
     with col_left:
-        # Today's Birthdays
         st.markdown("### 🎂 Today's Birthdays")
         if birthdays:
             for b in birthdays:
-                st.markdown(f"""
-                <div class="birthday-card">
-                    🎉 <strong>{b['name']}</strong> ({b['type']}) - Happy Birthday! 🎂🎈
-                </div>
-                """, unsafe_allow_html=True)
+                st.markdown(f'<div class="birthday-card">🎉 {b} - Happy Birthday! 🎈</div>', unsafe_allow_html=True)
         else:
-            st.info("No birthdays today")
+            st.info("No birthdays today 📅")
     
+    # --- Daily Pooja ---
     with col_right:
-        # Daily Pooja
-        st.markdown("### 🙏 Daily Pooja Schedule")
-        daily_poojas = safe_query("daily_pooja", filters={"pooja_date": str(today)})
-        if daily_poojas:
-            for p in daily_poojas:
-                status_icon = "✅" if p.get('status') == 'completed' else "⏳"
-                st.markdown(f"""
-                <div class="pooja-card">
-                    {status_icon} <strong>{p['pooja_name']}</strong> - {p.get('pooja_time', 'N/A')}
-                </div>
-                """, unsafe_allow_html=True)
+        st.markdown("### 🙏 Today's Pooja Schedule")
+        today_poojas = db_select("daily_pooja", filters={"pooja_date": str(date.today())})
+        if today_poojas:
+            for p in today_poojas:
+                icon = "✅" if p.get('status') == 'completed' else "⏳"
+                st.markdown(f'<div class="pooja-card">{icon} <strong>{p["pooja_name"]}</strong> — {p.get("pooja_time", "N/A")}</div>', unsafe_allow_html=True)
+                if p.get('status') != 'completed':
+                    if st.button(f"Mark Complete", key=f"comp_{p['id']}"):
+                        db_update("daily_pooja", {"status": "completed"}, "id", p['id'])
+                        st.rerun()
         else:
-            st.info("No pooja scheduled for today")
+            st.info("No pooja scheduled today")
         
-        # Add Daily Pooja
         with st.expander("➕ Add Daily Pooja"):
-            with st.form("add_daily_pooja"):
-                dp_name = st.text_input("Pooja Name")
-                dp_time = st.text_input("Pooja Time (e.g., 6:00 AM)")
-                dp_date = st.date_input("Pooja Date", value=today)
-                if st.form_submit_button("Add Pooja"):
+            with st.form("add_dp"):
+                dp_name = st.text_input("Pooja Name", key="dp_n")
+                dp_time = st.text_input("Time (e.g. 6:00 AM)", key="dp_t")
+                dp_date = st.date_input("Date", value=date.today(), key="dp_d")
+                if st.form_submit_button("Add"):
                     if dp_name:
-                        safe_insert("daily_pooja", {
+                        db_insert("daily_pooja", {
                             "pooja_name": dp_name,
                             "pooja_time": dp_time,
                             "pooja_date": str(dp_date),
                             "status": "pending"
                         })
-                        st.success("✅ Daily pooja added!")
+                        st.success("✅ Added!")
                         st.rerun()
     
-    # --- Income vs Expenses Chart ---
+    # --- Chart ---
     st.markdown("---")
-    st.markdown("### 📊 Income vs Expenses Overview")
-    
-    chart_data = {
-        "Category": ["Income", "Expenses", "Balance"],
-        "Amount": [income, expenses, balance]
-    }
-    df_chart = pd.DataFrame(chart_data)
-    st.bar_chart(df_chart.set_index("Category"))
+    st.markdown("### 📊 Income vs Expenses")
+    chart_df = pd.DataFrame({"Category": ["Income", "Expenses", "Balance"], "Amount (₹)": [income, expense, balance]})
+    st.bar_chart(chart_df.set_index("Category"))
+
 
 # ============================================================
-# DEVOTEE ENROLLMENT PAGE
+# PAGE: DEVOTEE ENROLLMENT
 # ============================================================
-def devotee_enrollment_page():
+def page_devotee_enrollment():
     st.markdown("""
     <div class="main-header">
         <h1>👥 Devotee Enrollment</h1>
-        <p>Register devotees and family members</p>
+        <p>Register family head, family members & yearly poojas</p>
     </div>
     """, unsafe_allow_html=True)
     
     tab1, tab2, tab3 = st.tabs(["➕ New Enrollment", "🔍 Search & Manage", "👨‍👩‍👧‍👦 Family Members"])
     
-    # --- TAB 1: New Enrollment ---
+    # ---- TAB 1: NEW ENROLLMENT ----
     with tab1:
         st.markdown("### 👤 Family Head Registration")
-        
-        with st.form("devotee_form", clear_on_submit=True):
-            col1, col2 = st.columns(2)
-            
-            with col1:
+        with st.form("enroll_form", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            with c1:
                 name = st.text_input("👤 Full Name *", placeholder="Enter full name")
                 dob = st.date_input("📅 Date of Birth", value=date(1990, 1, 1), min_value=date(1900, 1, 1))
                 relation_type = st.selectbox("👪 Relation Type", RELATION_TYPES)
-                mobile_no = st.text_input("📱 Mobile Number", placeholder="Enter mobile number")
-                whatsapp_no = st.text_input("📲 WhatsApp Number", placeholder="Enter WhatsApp number")
-            
-            with col2:
+                mobile_no = st.text_input("📱 Mobile Number")
+                whatsapp_no = st.text_input("📲 WhatsApp Number")
+            with c2:
                 wedding_day = st.date_input("💒 Wedding Day", value=None)
-                natchathiram = st.selectbox("⭐ Natchathiram (Star)", ["Select"] + NATCHATHIRAM_LIST)
-                address = st.text_area("🏠 Address", placeholder="Enter full address")
-                photo = st.file_uploader("📷 Photo", type=['jpg', 'jpeg', 'png'])
+                natchathiram = st.selectbox("⭐ Natchathiram", ["-- Select --"] + NATCHATHIRAM_LIST)
+                address = st.text_area("🏠 Address", height=100)
+                photo = st.file_uploader("📷 Upload Photo", type=['jpg', 'jpeg', 'png'])
             
-            # Yearly Pooja Section
-            st.markdown("### 🙏 Yearly Pooja Details")
-            st.markdown("*You can add more yearly poojas after enrollment from the manage section*")
+            st.markdown("#### 🙏 Yearly Pooja (Optional - Add more later)")
+            yc1, yc2, yc3 = st.columns(3)
+            pt_list = [p['name'] for p in db_select("pooja_types", "name")]
+            with yc1:
+                yp_type = st.selectbox("Pooja Type", ["-- Select --"] + pt_list, key="yp1_t")
+            with yc2:
+                yp_date = st.date_input("Pooja Date", key="yp1_d")
+            with yc3:
+                yp_desc = st.text_input("Description", key="yp1_desc")
             
-            yp_col1, yp_col2, yp_col3 = st.columns(3)
-            with yp_col1:
-                pooja_types = safe_query("pooja_types")
-                pooja_names = [p['name'] for p in pooja_types] if pooja_types else []
-                yearly_pooja_type = st.selectbox("Pooja Type", ["Select"] + pooja_names, key="yp_type1")
-            with yp_col2:
-                yearly_pooja_date = st.date_input("Pooja Date", key="yp_date1")
-            with yp_col3:
-                yearly_pooja_desc = st.text_input("Description", key="yp_desc1")
-            
-            submitted = st.form_submit_button("✅ Register Devotee", use_container_width=True)
-            
-            if submitted:
-                if not name:
+            if st.form_submit_button("✅ Register Devotee", use_container_width=True):
+                if not name.strip():
                     st.error("❌ Name is required!")
                 else:
-                    photo_url = None
-                    if photo:
-                        photo_url = upload_to_supabase_storage(photo, "photos", f"devotees/{name}")
-                    
-                    devotee_data = {
-                        "name": name,
+                    photo_url = file_to_base64(photo)
+                    result = db_insert("devotees", {
+                        "name": name.strip(),
                         "dob": str(dob),
                         "relation_type": relation_type,
                         "mobile_no": mobile_no,
                         "whatsapp_no": whatsapp_no,
                         "wedding_day": str(wedding_day) if wedding_day else None,
-                        "natchathiram": natchathiram if natchathiram != "Select" else None,
+                        "natchathiram": natchathiram if natchathiram != "-- Select --" else None,
                         "address": address,
                         "photo_url": photo_url
-                    }
-                    
-                    result = safe_insert("devotees", devotee_data)
-                    
+                    })
                     if result:
-                        # Add yearly pooja if provided
-                        if yearly_pooja_type != "Select":
-                            safe_insert("devotee_yearly_pooja", {
+                        if yp_type != "-- Select --":
+                            db_insert("devotee_yearly_pooja", {
                                 "devotee_id": result[0]['id'],
-                                "pooja_type": yearly_pooja_type,
-                                "pooja_date": str(yearly_pooja_date),
-                                "description": yearly_pooja_desc
+                                "pooja_type": yp_type,
+                                "pooja_date": str(yp_date),
+                                "description": yp_desc
                             })
-                        
-                        st.success(f"✅ Devotee '{name}' registered successfully!")
+                        st.success(f"✅ '{name}' enrolled successfully!")
                         st.rerun()
     
-    # --- TAB 2: Search & Manage ---
+    # ---- TAB 2: SEARCH & MANAGE ----
     with tab2:
         st.markdown("### 🔍 Search Devotees")
+        sc1, sc2, sc3 = st.columns(3)
+        with sc1:
+            s_name = st.text_input("Search by Name", key="sn")
+        with sc2:
+            s_mobile = st.text_input("Search by Mobile", key="sm")
+        with sc3:
+            s_address = st.text_input("Search by Address", key="sa")
         
-        search_col1, search_col2, search_col3 = st.columns(3)
-        with search_col1:
-            search_name = st.text_input("Search by Name", placeholder="Enter name")
-        with search_col2:
-            search_mobile = st.text_input("Search by Mobile", placeholder="Enter mobile")
-        with search_col3:
-            search_address = st.text_input("Search by Address", placeholder="Enter address")
+        devotees = db_select("devotees")
+        if s_name:
+            devotees = [d for d in devotees if s_name.lower() in d.get('name', '').lower()]
+        if s_mobile:
+            devotees = [d for d in devotees if s_mobile in d.get('mobile_no', '')]
+        if s_address:
+            devotees = [d for d in devotees if s_address.lower() in d.get('address', '').lower()]
         
-        devotees = safe_query("devotees")
+        st.markdown(f"**Found: {len(devotees)} devotee(s)**")
         
-        # Apply filters
-        if search_name:
-            devotees = [d for d in devotees if search_name.lower() in d.get('name', '').lower()]
-        if search_mobile:
-            devotees = [d for d in devotees if search_mobile in d.get('mobile_no', '')]
-        if search_address:
-            devotees = [d for d in devotees if search_address.lower() in d.get('address', '').lower()]
-        
-        if devotees:
-            for devotee in devotees:
-                with st.expander(f"👤 {devotee['name']} | 📱 {devotee.get('mobile_no', 'N/A')} | ⭐ {devotee.get('natchathiram', 'N/A')}"):
-                    det_col1, det_col2 = st.columns([3, 1])
-                    
-                    with det_col1:
-                        st.write(f"**Name:** {devotee['name']}")
-                        st.write(f"**DOB:** {devotee.get('dob', 'N/A')}")
-                        st.write(f"**Mobile:** {devotee.get('mobile_no', 'N/A')}")
-                        st.write(f"**WhatsApp:** {devotee.get('whatsapp_no', 'N/A')}")
-                        st.write(f"**Relation:** {devotee.get('relation_type', 'N/A')}")
-                        st.write(f"**Wedding Day:** {devotee.get('wedding_day', 'N/A')}")
-                        st.write(f"**Natchathiram:** {devotee.get('natchathiram', 'N/A')}")
-                        st.write(f"**Address:** {devotee.get('address', 'N/A')}")
-                    
-                    with det_col2:
-                        if devotee.get('photo_url') and devotee['photo_url'].startswith('data:'):
-                            st.markdown(f'<img src="{devotee["photo_url"]}" width="150" style="border-radius:10px;">', unsafe_allow_html=True)
-                    
-                    # Yearly Poojas
-                    st.markdown("**🙏 Yearly Poojas:**")
-                    yearly_poojas = safe_query("devotee_yearly_pooja", filters={"devotee_id": devotee['id']})
-                    if yearly_poojas:
-                        for yp in yearly_poojas:
-                            st.write(f"  - {yp['pooja_type']} on {yp.get('pooja_date', 'N/A')} - {yp.get('description', '')}")
-                    
-                    # Add more yearly poojas
-                    with st.form(f"add_yp_{devotee['id']}"):
-                        st.markdown("**➕ Add Yearly Pooja:**")
-                        ayp_col1, ayp_col2, ayp_col3 = st.columns(3)
-                        with ayp_col1:
-                            pooja_types_list = safe_query("pooja_types")
-                            pt_names = [p['name'] for p in pooja_types_list] if pooja_types_list else []
-                            new_yp_type = st.selectbox("Pooja Type", ["Select"] + pt_names, key=f"nyp_t_{devotee['id']}")
-                        with ayp_col2:
-                            new_yp_date = st.date_input("Date", key=f"nyp_d_{devotee['id']}")
-                        with ayp_col3:
-                            new_yp_desc = st.text_input("Description", key=f"nyp_desc_{devotee['id']}")
+        for dev in devotees:
+            with st.expander(f"👤 {dev['name']} | 📱 {dev.get('mobile_no','N/A')} | ⭐ {dev.get('natchathiram','N/A')}"):
+                dc1, dc2 = st.columns([3, 1])
+                with dc1:
+                    st.write(f"**Name:** {dev['name']}")
+                    st.write(f"**DOB:** {dev.get('dob', 'N/A')}")
+                    st.write(f"**Mobile:** {dev.get('mobile_no', 'N/A')}")
+                    st.write(f"**WhatsApp:** {dev.get('whatsapp_no', 'N/A')}")
+                    st.write(f"**Relation:** {dev.get('relation_type', 'N/A')}")
+                    st.write(f"**Wedding Day:** {dev.get('wedding_day', 'N/A')}")
+                    st.write(f"**Natchathiram:** {dev.get('natchathiram', 'N/A')}")
+                    st.write(f"**Address:** {dev.get('address', 'N/A')}")
+                with dc2:
+                    if dev.get('photo_url') and dev['photo_url'].startswith('data:'):
+                        st.markdown(f'<img src="{dev["photo_url"]}" width="130" style="border-radius:10px;">', unsafe_allow_html=True)
+                
+                # Yearly Poojas
+                st.markdown("**🙏 Yearly Poojas:**")
+                y_poojas = db_select("devotee_yearly_pooja", filters={"devotee_id": dev['id']})
+                if y_poojas:
+                    for yp in y_poojas:
+                        ypc1, ypc2 = st.columns([5, 1])
+                        with ypc1:
+                            st.write(f"  • {yp['pooja_type']} — {yp.get('pooja_date','N/A')} — {yp.get('description','')}")
+                        with ypc2:
+                            if st.button("❌", key=f"dyp_{yp['id']}"):
+                                db_delete("devotee_yearly_pooja", "id", yp['id'])
+                                st.rerun()
+                else:
+                    st.write("  No yearly poojas added.")
+                
+                # Add Yearly Pooja
+                with st.form(f"ayp_{dev['id']}"):
+                    st.markdown("**➕ Add Yearly Pooja**")
+                    ayc1, ayc2, ayc3 = st.columns(3)
+                    pt_names = [p['name'] for p in db_select("pooja_types", "name")]
+                    with ayc1:
+                        new_ypt = st.selectbox("Type", ["-- Select --"] + pt_names, key=f"nypt_{dev['id']}")
+                    with ayc2:
+                        new_ypd = st.date_input("Date", key=f"nypd_{dev['id']}")
+                    with ayc3:
+                        new_ypdesc = st.text_input("Desc", key=f"nypdc_{dev['id']}")
+                    if st.form_submit_button("Add Pooja"):
+                        if new_ypt != "-- Select --":
+                            db_insert("devotee_yearly_pooja", {
+                                "devotee_id": dev['id'],
+                                "pooja_type": new_ypt,
+                                "pooja_date": str(new_ypd),
+                                "description": new_ypdesc
+                            })
+                            st.success("✅ Yearly pooja added!")
+                            st.rerun()
+                
+                # Edit / Delete
+                st.markdown("---")
+                edc1, edc2 = st.columns(2)
+                with edc1:
+                    if st.button("✏️ Edit Devotee", key=f"edit_{dev['id']}"):
+                        st.session_state[f"editing_{dev['id']}"] = not st.session_state.get(f"editing_{dev['id']}", False)
+                        st.rerun()
+                with edc2:
+                    if st.button("🗑️ Delete Devotee", key=f"del_{dev['id']}"):
+                        db_delete("devotee_yearly_pooja", "devotee_id", dev['id'])
+                        db_delete("family_members", "devotee_id", dev['id'])
+                        db_delete("devotees", "id", dev['id'])
+                        st.success(f"✅ '{dev['name']}' deleted!")
+                        st.rerun()
+                
+                if st.session_state.get(f"editing_{dev['id']}", False):
+                    with st.form(f"ef_{dev['id']}"):
+                        st.markdown("### ✏️ Edit Details")
+                        ec1, ec2 = st.columns(2)
+                        with ec1:
+                            e_name = st.text_input("Name", value=dev.get('name', ''), key=f"en_{dev['id']}")
+                            e_dob_val = date(1990, 1, 1)
+                            if dev.get('dob'):
+                                try:
+                                    e_dob_val = datetime.strptime(str(dev['dob']), '%Y-%m-%d').date()
+                                except:
+                                    pass
+                            e_dob = st.date_input("DOB", value=e_dob_val, key=f"ed_{dev['id']}")
+                            e_mob = st.text_input("Mobile", value=dev.get('mobile_no', ''), key=f"em_{dev['id']}")
+                            e_wa = st.text_input("WhatsApp", value=dev.get('whatsapp_no', ''), key=f"ew_{dev['id']}")
+                        with ec2:
+                            e_rel = st.selectbox("Relation", RELATION_TYPES,
+                                index=RELATION_TYPES.index(dev['relation_type']) if dev.get('relation_type') in RELATION_TYPES else 0,
+                                key=f"er_{dev['id']}")
+                            star_opts = ["-- Select --"] + NATCHATHIRAM_LIST
+                            curr_star = dev.get('natchathiram', '-- Select --')
+                            e_star = st.selectbox("Natchathiram", star_opts,
+                                index=star_opts.index(curr_star) if curr_star in star_opts else 0,
+                                key=f"es_{dev['id']}")
+                            e_addr = st.text_area("Address", value=dev.get('address', ''), key=f"ea_{dev['id']}")
                         
-                        if st.form_submit_button("Add Yearly Pooja"):
-                            if new_yp_type != "Select":
-                                safe_insert("devotee_yearly_pooja", {
-                                    "devotee_id": devotee['id'],
-                                    "pooja_type": new_yp_type,
-                                    "pooja_date": str(new_yp_date),
-                                    "description": new_yp_desc
-                                })
-                                st.success("✅ Yearly pooja added!")
-                                st.rerun()
-                    
-                    # Edit & Delete buttons
-                    btn_col1, btn_col2 = st.columns(2)
-                    with btn_col1:
-                        if st.button(f"✏️ Edit", key=f"edit_{devotee['id']}"):
-                            st.session_state[f"editing_{devotee['id']}"] = True
+                        if st.form_submit_button("💾 Save Changes"):
+                            db_update("devotees", {
+                                "name": e_name, "dob": str(e_dob),
+                                "mobile_no": e_mob, "whatsapp_no": e_wa,
+                                "relation_type": e_rel,
+                                "natchathiram": e_star if e_star != "-- Select --" else None,
+                                "address": e_addr
+                            }, "id", dev['id'])
+                            st.session_state[f"editing_{dev['id']}"] = False
+                            st.success("✅ Updated!")
                             st.rerun()
-                    with btn_col2:
-                        if st.button(f"🗑️ Delete", key=f"del_{devotee['id']}"):
-                            safe_delete("devotee_yearly_pooja", "devotee_id", devotee['id'])
-                            safe_delete("family_members", "devotee_id", devotee['id'])
-                            safe_delete("devotees", "id", devotee['id'])
-                            st.success(f"✅ Devotee '{devotee['name']}' deleted!")
-                            st.rerun()
-                    
-                    # Edit Form
-                    if st.session_state.get(f"editing_{devotee['id']}", False):
-                        with st.form(f"edit_form_{devotee['id']}"):
-                            st.markdown("### ✏️ Edit Devotee")
-                            ec1, ec2 = st.columns(2)
-                            with ec1:
-                                e_name = st.text_input("Name", value=devotee.get('name', ''))
-                                e_dob = st.date_input("DOB", value=datetime.strptime(devotee['dob'], '%Y-%m-%d').date() if devotee.get('dob') else date(1990,1,1))
-                                e_mobile = st.text_input("Mobile", value=devotee.get('mobile_no', ''))
-                                e_whatsapp = st.text_input("WhatsApp", value=devotee.get('whatsapp_no', ''))
-                            with ec2:
-                                e_relation = st.selectbox("Relation", RELATION_TYPES, index=RELATION_TYPES.index(devotee.get('relation_type', 'Self')) if devotee.get('relation_type') in RELATION_TYPES else 0)
-                                curr_star = devotee.get('natchathiram', '')
-                                star_list = ["Select"] + NATCHATHIRAM_LIST
-                                star_idx = star_list.index(curr_star) if curr_star in star_list else 0
-                                e_natchathiram = st.selectbox("Natchathiram", star_list, index=star_idx)
-                                e_address = st.text_area("Address", value=devotee.get('address', ''))
-                            
-                            if st.form_submit_button("💾 Save Changes"):
-                                safe_update("devotees", {
-                                    "name": e_name,
-                                    "dob": str(e_dob),
-                                    "mobile_no": e_mobile,
-                                    "whatsapp_no": e_whatsapp,
-                                    "relation_type": e_relation,
-                                    "natchathiram": e_natchathiram if e_natchathiram != "Select" else None,
-                                    "address": e_address
-                                }, "id", devotee['id'])
-                                st.session_state[f"editing_{devotee['id']}"] = False
-                                st.success("✅ Updated successfully!")
-                                st.rerun()
-        else:
-            st.info("No devotees found. Start by enrolling a new devotee!")
     
-    # --- TAB 3: Family Members ---
+    # ---- TAB 3: FAMILY MEMBERS ----
     with tab3:
         st.markdown("### 👨‍👩‍👧‍👦 Manage Family Members")
+        devs = db_select("devotees", "id, name, mobile_no")
+        if not devs:
+            st.info("No devotees enrolled. Register a family head first.")
+            return
         
-        devotees_list = safe_query("devotees")
-        if devotees_list:
-            devotee_options = {f"{d['name']} ({d.get('mobile_no', 'N/A')})": d['id'] for d in devotees_list}
-            selected_devotee = st.selectbox("Select Family Head", list(devotee_options.keys()))
+        dev_opts = {f"{d['name']} ({d.get('mobile_no','N/A')})": d['id'] for d in devs}
+        sel_head = st.selectbox("Select Family Head", list(dev_opts.keys()))
+        head_id = dev_opts[sel_head]
+        
+        members = db_select("family_members", filters={"devotee_id": head_id})
+        if members:
+            st.markdown("**Current Family Members:**")
+            for fm in members:
+                fmc1, fmc2 = st.columns([5, 1])
+                with fmc1:
+                    st.write(f"👤 **{fm['name']}** | {fm.get('relation_type','N/A')} | DOB: {fm.get('dob','N/A')} | ⭐ {fm.get('natchathiram','N/A')}")
+                with fmc2:
+                    if st.button("🗑️", key=f"dfm_{fm['id']}"):
+                        db_delete("family_members", "id", fm['id'])
+                        st.rerun()
+        
+        st.markdown("---")
+        st.markdown("### ➕ Add Family Member")
+        with st.form("add_fm", clear_on_submit=True):
+            fc1, fc2 = st.columns(2)
+            with fc1:
+                fm_name = st.text_input("👤 Name *")
+                fm_dob = st.date_input("📅 DOB", value=date(1995, 1, 1))
+                fm_rel = st.selectbox("👪 Relation", RELATION_TYPES)
+            with fc2:
+                fm_wed = st.date_input("💒 Wedding Day", value=None, key="fmw")
+                fm_star = st.selectbox("⭐ Natchathiram", ["-- Select --"] + NATCHATHIRAM_LIST, key="fms")
             
-            if selected_devotee:
-                devotee_id = devotee_options[selected_devotee]
-                
-                # Show existing family members
-                family_members = safe_query("family_members", filters={"devotee_id": devotee_id})
-                
-                if family_members:
-                    st.markdown("**Existing Family Members:**")
-                    for fm in family_members:
-                        fm_col1, fm_col2 = st.columns([4, 1])
-                        with fm_col1:
-                            st.write(f"👤 **{fm['name']}** | Relation: {fm.get('relation_type', 'N/A')} | DOB: {fm.get('dob', 'N/A')} | Star: {fm.get('natchathiram', 'N/A')}")
-                        with fm_col2:
-                            if st.button("🗑️", key=f"del_fm_{fm['id']}"):
-                                safe_delete("family_members", "id", fm['id'])
-                                st.success("Deleted!")
-                                st.rerun()
-                
-                # Add new family member
-                st.markdown("---")
-                st.markdown("### ➕ Add Family Member")
-                
-                with st.form("add_family_member", clear_on_submit=True):
-                    fm_col1, fm_col2 = st.columns(2)
-                    with fm_col1:
-                        fm_name = st.text_input("👤 Name *")
-                        fm_dob = st.date_input("📅 Date of Birth", value=date(1990, 1, 1))
-                        fm_relation = st.selectbox("👪 Relation Type", RELATION_TYPES)
-                    with fm_col2:
-                        fm_wedding = st.date_input("💒 Wedding Day", value=None, key="fm_wedding")
-                        fm_star = st.selectbox("⭐ Natchathiram", ["Select"] + NATCHATHIRAM_LIST, key="fm_star")
-                    
-                    if st.form_submit_button("➕ Add Family Member", use_container_width=True):
-                        if fm_name:
-                            safe_insert("family_members", {
-                                "devotee_id": devotee_id,
-                                "name": fm_name,
-                                "dob": str(fm_dob),
-                                "relation_type": fm_relation,
-                                "wedding_day": str(fm_wedding) if fm_wedding else None,
-                                "natchathiram": fm_star if fm_star != "Select" else None
-                            })
-                            st.success(f"✅ Family member '{fm_name}' added!")
-                            st.rerun()
-                        else:
-                            st.error("❌ Name is required!")
-        else:
-            st.info("No devotees enrolled yet. Please enroll a family head first.")
+            if st.form_submit_button("➕ Add Member", use_container_width=True):
+                if fm_name.strip():
+                    db_insert("family_members", {
+                        "devotee_id": head_id,
+                        "name": fm_name.strip(),
+                        "dob": str(fm_dob),
+                        "relation_type": fm_rel,
+                        "wedding_day": str(fm_wed) if fm_wed else None,
+                        "natchathiram": fm_star if fm_star != "-- Select --" else None
+                    })
+                    st.success(f"✅ '{fm_name}' added!")
+                    st.rerun()
+                else:
+                    st.error("❌ Name is required!")
+
 
 # ============================================================
-# BILLING PAGE
+# PAGE: BILLING
 # ============================================================
-def billing_page():
+def page_billing():
     st.markdown("""
     <div class="main-header">
         <h1>🧾 Billing</h1>
-        <p>Generate bills for pooja services</p>
+        <p>Generate pooja bills for devotees</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -751,532 +668,435 @@ def billing_page():
     with tab1:
         st.markdown("### 🧾 Create New Bill")
         
-        # Devotee Type Selection
-        devotee_type = st.radio("Select Devotee Type", ["Enrolled Devotee", "Guest Devotee"], horizontal=True)
+        dev_type = st.radio("Devotee Type", ["Enrolled Devotee", "Guest Devotee"], horizontal=True)
         
-        bill_col1, bill_col2 = st.columns(2)
+        bc1, bc2 = st.columns(2)
         
-        with bill_col1:
-            manual_bill_no = st.text_input("📝 Manual Bill No", placeholder="Enter manual bill number")
-            bill_book_no = st.text_input("📖 Bill Book No", placeholder="Enter bill book number")
+        with bc1:
+            manual_bill = st.text_input("📝 Manual Bill No")
+            bill_book = st.text_input("📖 Bill Book No")
             
-            # Pooja Type
-            pooja_types = safe_query("pooja_types")
-            pooja_options = {f"{p['name']} - ₹{p.get('amount', 0)}": p for p in pooja_types} if pooja_types else {}
-            selected_pooja = st.selectbox("🙏 Pooja Type", list(pooja_options.keys()) if pooja_options else ["No pooja types configured"])
+            pt_data = db_select("pooja_types")
+            pt_opts = {f"{p['name']} — ₹{p.get('amount',0)}": p for p in pt_data} if pt_data else {}
+            sel_pooja = st.selectbox("🙏 Pooja Type", list(pt_opts.keys()) if pt_opts else ["No pooja types"])
             
-            if selected_pooja and selected_pooja in pooja_options:
-                amount = st.number_input("💰 Amount", value=float(pooja_options[selected_pooja].get('amount', 0)), min_value=0.0, step=10.0)
-            else:
-                amount = st.number_input("💰 Amount", value=0.0, min_value=0.0, step=10.0)
-            
+            default_amt = float(pt_opts[sel_pooja].get('amount', 0)) if sel_pooja in pt_opts else 0.0
+            amount = st.number_input("💰 Amount (₹)", value=default_amt, min_value=0.0, step=10.0)
             bill_date = st.date_input("📅 Bill Date", value=date.today())
         
-        with bill_col2:
+        with bc2:
             devotee_id = None
-            guest_name = ""
-            guest_address = ""
-            guest_mobile = ""
-            guest_whatsapp = ""
+            g_name = g_addr = g_mob = g_wa = ""
             
-            if devotee_type == "Enrolled Devotee":
+            if dev_type == "Enrolled Devotee":
                 st.markdown("### 🔍 Search Enrolled Devotee")
+                search_by = st.selectbox("Search By", ["Name", "Mobile", "WhatsApp", "Address"])
+                search_val = st.text_input(f"Enter {search_by}")
                 
-                search_type = st.selectbox("Search By", ["Name", "Mobile", "WhatsApp", "Address"])
-                search_value = st.text_input(f"Enter {search_type}", placeholder=f"Search by {search_type.lower()}")
+                all_devs = db_select("devotees")
+                if search_val:
+                    field_map = {"Name": "name", "Mobile": "mobile_no", "WhatsApp": "whatsapp_no", "Address": "address"}
+                    field = field_map[search_by]
+                    all_devs = [d for d in all_devs if search_val.lower() in str(d.get(field, '')).lower()]
                 
-                devotees = safe_query("devotees")
-                
-                if search_value:
-                    if search_type == "Name":
-                        devotees = [d for d in devotees if search_value.lower() in d.get('name', '').lower()]
-                    elif search_type == "Mobile":
-                        devotees = [d for d in devotees if search_value in d.get('mobile_no', '')]
-                    elif search_type == "WhatsApp":
-                        devotees = [d for d in devotees if search_value in d.get('whatsapp_no', '')]
-                    elif search_type == "Address":
-                        devotees = [d for d in devotees if search_value.lower() in d.get('address', '').lower()]
-                
-                if devotees:
-                    devotee_display = {f"{d['name']} - {d.get('mobile_no', 'N/A')} - {d.get('address', 'N/A')[:30]}": d for d in devotees}
-                    selected = st.selectbox("Select Devotee", list(devotee_display.keys()))
-                    
-                    if selected:
-                        sel_devotee = devotee_display[selected]
-                        devotee_id = sel_devotee['id']
-                        
+                if all_devs:
+                    dev_map = {f"{d['name']} — {d.get('mobile_no','N/A')} — {str(d.get('address',''))[:30]}": d for d in all_devs}
+                    chosen = st.selectbox("Select Devotee", list(dev_map.keys()))
+                    if chosen:
+                        sd = dev_map[chosen]
+                        devotee_id = sd['id']
                         st.markdown(f"""
                         <div class="success-box">
-                            <strong>Selected Devotee:</strong><br>
-                            👤 {sel_devotee['name']}<br>
-                            📱 {sel_devotee.get('mobile_no', 'N/A')}<br>
-                            📲 {sel_devotee.get('whatsapp_no', 'N/A')}<br>
-                            🏠 {sel_devotee.get('address', 'N/A')}
+                            👤 <strong>{sd['name']}</strong><br>
+                            📱 {sd.get('mobile_no','N/A')} &nbsp; 📲 {sd.get('whatsapp_no','N/A')}<br>
+                            🏠 {sd.get('address','N/A')}
                         </div>
                         """, unsafe_allow_html=True)
                 else:
-                    st.warning("No devotees found matching your search")
+                    st.warning("No devotees match your search")
             
-            else:  # Guest Devotee
-                st.markdown("### 👤 Guest Details")
-                guest_name = st.text_input("👤 Guest Name *", placeholder="Enter guest name")
-                guest_address = st.text_area("🏠 Guest Address *", placeholder="Enter guest address")
-                guest_mobile = st.text_input("📱 Mobile Number", placeholder="Enter mobile number")
-                guest_whatsapp = st.text_input("📲 WhatsApp Number", placeholder="Enter WhatsApp number")
-        
-        # Generate Bill Button
-        if st.button("🧾 Generate Bill", use_container_width=True, type="primary"):
-            if devotee_type == "Enrolled Devotee" and not devotee_id:
-                st.error("❌ Please select an enrolled devotee!")
-            elif devotee_type == "Guest Devotee" and not guest_name:
-                st.error("❌ Please enter guest name!")
-            elif amount <= 0:
-                st.error("❌ Amount must be greater than 0!")
             else:
-                bill_no = generate_bill_no()
-                pooja_name = selected_pooja.split(" - ")[0] if " - " in selected_pooja else selected_pooja
+                st.markdown("### 👤 Guest Devotee Details")
+                g_name = st.text_input("👤 Guest Name *")
+                g_addr = st.text_area("🏠 Address *", height=80)
+                g_mob = st.text_input("📱 Mobile Number")
+                g_wa = st.text_input("📲 WhatsApp Number")
+        
+        st.markdown("")
+        if st.button("🧾 Generate Bill", use_container_width=True, type="primary"):
+            valid = True
+            if dev_type == "Enrolled Devotee" and not devotee_id:
+                st.error("❌ Select an enrolled devotee!")
+                valid = False
+            if dev_type == "Guest Devotee" and not g_name.strip():
+                st.error("❌ Guest name is required!")
+                valid = False
+            if amount <= 0:
+                st.error("❌ Amount must be > 0!")
+                valid = False
+            
+            if valid:
+                bill_no = gen_bill_no()
+                pooja_name = sel_pooja.split(" — ")[0] if " — " in sel_pooja else sel_pooja
                 
                 bill_data = {
                     "bill_no": bill_no,
-                    "manual_bill_no": manual_bill_no,
-                    "bill_book_no": bill_book_no,
-                    "devotee_type": "enrolled" if devotee_type == "Enrolled Devotee" else "guest",
+                    "manual_bill_no": manual_bill,
+                    "bill_book_no": bill_book,
+                    "devotee_type": "enrolled" if dev_type == "Enrolled Devotee" else "guest",
                     "devotee_id": devotee_id,
-                    "guest_name": guest_name if devotee_type == "Guest Devotee" else None,
-                    "guest_address": guest_address if devotee_type == "Guest Devotee" else None,
-                    "guest_mobile": guest_mobile if devotee_type == "Guest Devotee" else None,
-                    "guest_whatsapp": guest_whatsapp if devotee_type == "Guest Devotee" else None,
+                    "guest_name": g_name if dev_type == "Guest Devotee" else None,
+                    "guest_address": g_addr if dev_type == "Guest Devotee" else None,
+                    "guest_mobile": g_mob if dev_type == "Guest Devotee" else None,
+                    "guest_whatsapp": g_wa if dev_type == "Guest Devotee" else None,
                     "pooja_type": pooja_name,
                     "amount": amount,
                     "bill_date": str(bill_date)
                 }
                 
-                result = safe_insert("bills", bill_data)
-                if result:
-                    st.success(f"✅ Bill generated successfully! Bill No: {bill_no}")
+                res = db_insert("bills", bill_data)
+                if res:
+                    st.success(f"✅ Bill generated: {bill_no}")
                     
-                    # Display Bill
-                    st.markdown("---")
-                    st.markdown("### 🧾 Bill Preview")
-                    
-                    if devotee_type == "Enrolled Devotee" and devotee_id:
-                        dev = [d for d in safe_query("devotees") if d['id'] == devotee_id]
-                        if dev:
-                            bname = dev[0]['name']
-                            baddress = dev[0].get('address', '')
-                            bmobile = dev[0].get('mobile_no', '')
-                        else:
-                            bname = baddress = bmobile = "N/A"
+                    # Get display info
+                    if dev_type == "Enrolled Devotee" and devotee_id:
+                        dinfo = db_select("devotees", filters={"id": devotee_id})
+                        b_name = dinfo[0]['name'] if dinfo else "N/A"
+                        b_addr = dinfo[0].get('address', '') if dinfo else ""
+                        b_mob = dinfo[0].get('mobile_no', '') if dinfo else ""
                     else:
-                        bname = guest_name
-                        baddress = guest_address
-                        bmobile = guest_mobile
+                        b_name, b_addr, b_mob = g_name, g_addr, g_mob
                     
                     st.markdown(f"""
-                    <div style="background:white; padding:30px; border:2px solid #ff6b35; border-radius:15px; max-width:500px; margin:auto;">
-                        <div style="text-align:center; border-bottom:2px solid #ff6b35; padding-bottom:15px;">
+                    <div class="bill-preview">
+                        <div class="bill-header">
                             <h2 style="color:#8B0000; margin:0;">🛕 Temple Name</h2>
-                            <p style="margin:5px 0;">Temple Address Line</p>
+                            <p style="margin:3px 0;">Temple Address Line</p>
+                            <p style="margin:0; font-size:0.85em;">Ph: XXXXXXXXXX</p>
                         </div>
                         <div style="padding:15px 0;">
-                            <table style="width:100%;">
-                                <tr><td><strong>Bill No:</strong></td><td>{bill_no}</td></tr>
-                                <tr><td><strong>Manual Bill No:</strong></td><td>{manual_bill_no}</td></tr>
-                                <tr><td><strong>Bill Book No:</strong></td><td>{bill_book_no}</td></tr>
-                                <tr><td><strong>Date:</strong></td><td>{bill_date}</td></tr>
-                                <tr><td colspan="2"><hr></td></tr>
-                                <tr><td><strong>Name:</strong></td><td>{bname}</td></tr>
-                                <tr><td><strong>Address:</strong></td><td>{baddress}</td></tr>
-                                <tr><td><strong>Mobile:</strong></td><td>{bmobile}</td></tr>
-                                <tr><td colspan="2"><hr></td></tr>
-                                <tr><td><strong>Pooja Type:</strong></td><td>{pooja_name}</td></tr>
-                                <tr><td><strong>Amount:</strong></td><td style="font-size:1.3em; color:#11998e;"><strong>₹ {amount:,.2f}</strong></td></tr>
+                            <table style="width:100%; border-collapse:collapse;">
+                                <tr><td style="padding:4px;"><strong>Bill No:</strong></td><td>{bill_no}</td></tr>
+                                <tr><td style="padding:4px;"><strong>Manual Bill:</strong></td><td>{manual_bill}</td></tr>
+                                <tr><td style="padding:4px;"><strong>Bill Book:</strong></td><td>{bill_book}</td></tr>
+                                <tr><td style="padding:4px;"><strong>Date:</strong></td><td>{bill_date}</td></tr>
+                                <tr><td colspan="2"><hr style="border:1px dashed #ccc;"></td></tr>
+                                <tr><td style="padding:4px;"><strong>Name:</strong></td><td>{b_name}</td></tr>
+                                <tr><td style="padding:4px;"><strong>Address:</strong></td><td>{b_addr}</td></tr>
+                                <tr><td style="padding:4px;"><strong>Mobile:</strong></td><td>{b_mob}</td></tr>
+                                <tr><td colspan="2"><hr style="border:1px dashed #ccc;"></td></tr>
+                                <tr><td style="padding:4px;"><strong>Pooja:</strong></td><td>{pooja_name}</td></tr>
+                                <tr><td style="padding:4px;"><strong>Amount:</strong></td>
+                                    <td style="font-size:1.4em; color:#11998e;"><strong>₹ {amount:,.2f}</strong></td></tr>
                             </table>
                         </div>
                         <div style="text-align:center; border-top:2px solid #ff6b35; padding-top:10px;">
-                            <p style="margin:0; color:#666;">🙏 Thank you for your contribution! 🙏</p>
+                            <p style="margin:0; color:#666;">🙏 Thank you! May God bless you! 🙏</p>
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
     
-    # --- TAB 2: Bill History ---
     with tab2:
         st.markdown("### 📋 Bill History")
-        
-        bills = safe_query("bills")
+        bills = db_select("bills")
+        bills = sorted(bills, key=lambda x: x.get('created_at', ''), reverse=True)
         
         if bills:
-            bills_sorted = sorted(bills, key=lambda x: x.get('created_at', ''), reverse=True)
-            
-            for bill in bills_sorted:
-                bill_name = bill.get('guest_name', '')
-                if bill.get('devotee_type') == 'enrolled' and bill.get('devotee_id'):
-                    dev_data = safe_query("devotees", filters={"id": bill['devotee_id']})
-                    if dev_data:
-                        bill_name = dev_data[0]['name']
+            for b in bills:
+                bname = b.get('guest_name', '')
+                if b.get('devotee_type') == 'enrolled' and b.get('devotee_id'):
+                    ddata = db_select("devotees", "name", filters={"id": b['devotee_id']})
+                    bname = ddata[0]['name'] if ddata else 'Unknown'
                 
-                with st.expander(f"🧾 {bill.get('bill_no', 'N/A')} | {bill_name} | {bill.get('pooja_type', '')} | ₹{bill.get('amount', 0)} | {bill.get('bill_date', '')}"):
-                    st.write(f"**Bill No:** {bill.get('bill_no', 'N/A')}")
-                    st.write(f"**Manual Bill No:** {bill.get('manual_bill_no', 'N/A')}")
-                    st.write(f"**Bill Book No:** {bill.get('bill_book_no', 'N/A')}")
-                    st.write(f"**Type:** {bill.get('devotee_type', 'N/A')}")
-                    st.write(f"**Pooja:** {bill.get('pooja_type', 'N/A')}")
-                    st.write(f"**Amount:** ₹{bill.get('amount', 0)}")
-                    st.write(f"**Date:** {bill.get('bill_date', 'N/A')}")
+                with st.expander(f"🧾 {b.get('bill_no','')} | {bname} | {b.get('pooja_type','')} | ₹{b.get('amount',0)} | {b.get('bill_date','')}"):
+                    st.write(f"**Bill No:** {b.get('bill_no','')}")
+                    st.write(f"**Manual Bill:** {b.get('manual_bill_no','')}")
+                    st.write(f"**Book No:** {b.get('bill_book_no','')}")
+                    st.write(f"**Type:** {b.get('devotee_type','')}")
+                    st.write(f"**Pooja:** {b.get('pooja_type','')}")
+                    st.write(f"**Amount:** ₹{b.get('amount',0):,.2f}")
+                    st.write(f"**Date:** {b.get('bill_date','')}")
+                    if b.get('guest_name'):
+                        st.write(f"**Guest:** {b['guest_name']} | {b.get('guest_address','')} | 📱{b.get('guest_mobile','')}")
                     
-                    if bill.get('devotee_type') == 'guest':
-                        st.write(f"**Guest Name:** {bill.get('guest_name', 'N/A')}")
-                        st.write(f"**Guest Address:** {bill.get('guest_address', 'N/A')}")
-                        st.write(f"**Guest Mobile:** {bill.get('guest_mobile', 'N/A')}")
-                    
-                    # Delete button (admin only)
                     if st.session_state.user_role == 'admin':
-                        if st.button(f"🗑️ Delete Bill", key=f"del_bill_{bill['id']}"):
-                            safe_delete("bills", "id", bill['id'])
-                            st.success("✅ Bill deleted!")
+                        if st.button("🗑️ Delete Bill", key=f"dbill_{b['id']}"):
+                            db_delete("bills", "id", b['id'])
+                            st.success("✅ Deleted!")
                             st.rerun()
         else:
-            st.info("No bills found")
+            st.info("No bills yet")
+
 
 # ============================================================
-# EXPENSES PAGE
+# PAGE: EXPENSES
 # ============================================================
-def expenses_page():
+def page_expenses():
     st.markdown("""
     <div class="main-header">
-        <h1>💸 Expenses Management</h1>
-        <p>Track and manage temple expenses</p>
+        <h1>💸 Expenses</h1>
+        <p>Track temple expenses</p>
     </div>
     """, unsafe_allow_html=True)
     
     tab1, tab2 = st.tabs(["➕ Add Expense", "📋 Expense History"])
     
     with tab1:
-        with st.form("expense_form", clear_on_submit=True):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                expense_types = safe_query("expense_types")
-                exp_names = [e['name'] for e in expense_types] if expense_types else ["Miscellaneous"]
-                expense_type = st.selectbox("📂 Expense Type", exp_names)
-                amount = st.number_input("💰 Amount (₹)", min_value=0.0, step=10.0)
-            
-            with col2:
-                expense_date = st.date_input("📅 Date", value=date.today())
-                description = st.text_area("📝 Description", placeholder="Enter expense details")
+        with st.form("exp_form", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            with c1:
+                et_data = db_select("expense_types", "name")
+                et_names = [e['name'] for e in et_data] if et_data else ["Miscellaneous"]
+                exp_type = st.selectbox("📂 Expense Type", et_names)
+                exp_amt = st.number_input("💰 Amount (₹)", min_value=0.0, step=10.0)
+            with c2:
+                exp_date = st.date_input("📅 Date", value=date.today())
+                exp_desc = st.text_area("📝 Description", height=100)
             
             if st.form_submit_button("💾 Save Expense", use_container_width=True):
-                if amount > 0:
-                    safe_insert("expenses", {
-                        "expense_type": expense_type,
-                        "amount": amount,
-                        "description": description,
-                        "expense_date": str(expense_date)
+                if exp_amt > 0:
+                    db_insert("expenses", {
+                        "expense_type": exp_type,
+                        "amount": exp_amt,
+                        "description": exp_desc,
+                        "expense_date": str(exp_date)
                     })
-                    st.success("✅ Expense recorded successfully!")
+                    st.success("✅ Expense saved!")
                     st.rerun()
                 else:
-                    st.error("❌ Amount must be greater than 0!")
+                    st.error("❌ Amount must be > 0!")
     
     with tab2:
-        expenses = safe_query("expenses")
-        if expenses:
-            expenses_sorted = sorted(expenses, key=lambda x: x.get('expense_date', ''), reverse=True)
+        exps = db_select("expenses")
+        exps = sorted(exps, key=lambda x: x.get('expense_date', ''), reverse=True)
+        
+        if exps:
+            total = sum(float(e.get('amount', 0)) for e in exps)
+            st.metric("Total Expenses", f"₹ {total:,.2f}")
             
-            # Summary
-            total_exp = sum(float(e.get('amount', 0)) for e in expenses)
-            st.metric("Total Expenses", f"₹ {total_exp:,.2f}")
-            
-            # Table
             df = pd.DataFrame([{
                 "Date": e.get('expense_date', ''),
                 "Type": e.get('expense_type', ''),
-                "Amount": f"₹ {e.get('amount', 0):,.2f}",
+                "Amount (₹)": f"₹ {float(e.get('amount',0)):,.2f}",
                 "Description": e.get('description', '')
-            } for e in expenses_sorted])
+            } for e in exps])
+            st.dataframe(df, use_container_width=True, hide_index=True)
             
-            st.dataframe(df, use_container_width=True)
-            
-            # Delete option
             if st.session_state.user_role == 'admin':
                 st.markdown("### 🗑️ Delete Expense")
-                exp_options = {f"{e.get('expense_date', '')} - {e.get('expense_type', '')} - ₹{e.get('amount', 0)}": e['id'] for e in expenses_sorted}
-                sel_exp = st.selectbox("Select expense to delete", list(exp_options.keys()))
-                if st.button("🗑️ Delete Selected Expense"):
-                    safe_delete("expenses", "id", exp_options[sel_exp])
-                    st.success("✅ Expense deleted!")
+                exp_opts = {f"{e.get('expense_date','')} — {e.get('expense_type','')} — ₹{e.get('amount',0)}": e['id'] for e in exps}
+                sel_exp = st.selectbox("Select to delete", list(exp_opts.keys()))
+                if st.button("🗑️ Delete"):
+                    db_delete("expenses", "id", exp_opts[sel_exp])
+                    st.success("✅ Deleted!")
                     st.rerun()
         else:
-            st.info("No expenses recorded yet")
+            st.info("No expenses recorded")
+
 
 # ============================================================
-# REPORTS PAGE
+# PAGE: REPORTS
 # ============================================================
-def reports_page():
+def page_reports():
     st.markdown("""
     <div class="main-header">
         <h1>📊 Reports</h1>
-        <p>Financial and operational reports</p>
+        <p>Financial & operational reports with filters</p>
     </div>
     """, unsafe_allow_html=True)
     
-    # Filter Options
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        report_period = st.selectbox("📅 Report Period", ["Daily", "Weekly", "Monthly", "Yearly", "Custom Date"])
+    rc1, rc2, rc3 = st.columns(3)
+    with rc1:
+        period = st.selectbox("📅 Period", ["Daily", "Weekly", "Monthly", "Yearly", "Custom Date"])
     
     today = date.today()
-    
-    if report_period == "Custom Date":
-        with col2:
-            custom_start = st.date_input("Start Date", value=today - timedelta(days=30))
-        with col3:
-            custom_end = st.date_input("End Date", value=today)
-        start_date = custom_start
-        end_date = custom_end
-    elif report_period == "Daily":
-        start_date = today
-        end_date = today
-    elif report_period == "Weekly":
-        start_date = today - timedelta(days=today.weekday())
-        end_date = today
-    elif report_period == "Monthly":
-        start_date = today.replace(day=1)
-        end_date = today
+    if period == "Custom Date":
+        with rc2:
+            start_dt = st.date_input("From", value=today - timedelta(days=30))
+        with rc3:
+            end_dt = st.date_input("To", value=today)
     else:
-        start_date = today.replace(month=1, day=1)
-        end_date = today
+        start_dt, end_dt = get_period_dates(period)
     
-    with col3 if report_period != "Custom Date" else st.columns(1)[0]:
-        pooja_types = safe_query("pooja_types")
-        pt_names = ["All"] + [p['name'] for p in pooja_types] if pooja_types else ["All"]
-        pooja_filter = st.selectbox("🙏 Pooja Type Filter", pt_names)
+    pt_data = db_select("pooja_types", "name")
+    pt_names = ["All"] + [p['name'] for p in pt_data]
+    with rc3 if period != "Custom Date" else st.columns(1)[0]:
+        pooja_filter = st.selectbox("🙏 Pooja Filter", pt_names)
     
     st.markdown("---")
     
-    # Fetch Data
-    try:
-        bills_result = supabase.table("bills").select("*").gte("bill_date", str(start_date)).lte("bill_date", str(end_date)).execute()
-        bills_data = bills_result.data if bills_result.data else []
-        
-        expenses_result = supabase.table("expenses").select("*").gte("expense_date", str(start_date)).lte("expense_date", str(end_date)).execute()
-        expenses_data = expenses_result.data if expenses_result.data else []
-    except:
-        bills_data = []
-        expenses_data = []
+    # Fetch
+    bills = db_select("bills", gte_filters={"bill_date": start_dt}, lte_filters={"bill_date": end_dt})
+    expenses = db_select("expenses", gte_filters={"expense_date": start_dt}, lte_filters={"expense_date": end_dt})
     
-    # Apply pooja filter
     if pooja_filter != "All":
-        bills_data = [b for b in bills_data if b.get('pooja_type') == pooja_filter]
+        bills = [b for b in bills if b.get('pooja_type') == pooja_filter]
     
-    total_income = sum(float(b.get('amount', 0)) for b in bills_data)
-    total_expenses = sum(float(e.get('amount', 0)) for e in expenses_data)
-    net_balance = total_income - total_expenses
+    tot_income = sum(float(b.get('amount', 0)) for b in bills)
+    tot_expense = sum(float(e.get('amount', 0)) for e in expenses)
+    net = tot_income - tot_expense
     
-    # Summary Cards
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown(f"""
-        <div class="metric-card income">
-            <h3>💰 Total Income</h3>
-            <h2>₹ {total_income:,.2f}</h2>
-        </div>
-        """, unsafe_allow_html=True)
-    with col2:
-        st.markdown(f"""
-        <div class="metric-card expense">
-            <h3>💸 Total Expenses</h3>
-            <h2>₹ {total_expenses:,.2f}</h2>
-        </div>
-        """, unsafe_allow_html=True)
-    with col3:
-        st.markdown(f"""
-        <div class="metric-card balance">
-            <h3>💎 Net Balance</h3>
-            <h2>₹ {net_balance:,.2f}</h2>
-        </div>
-        """, unsafe_allow_html=True)
+    mc1, mc2, mc3 = st.columns(3)
+    with mc1:
+        st.markdown(f'<div class="metric-card income"><h3>💰 Income</h3><h2>₹ {tot_income:,.2f}</h2></div>', unsafe_allow_html=True)
+    with mc2:
+        st.markdown(f'<div class="metric-card expense"><h3>💸 Expenses</h3><h2>₹ {tot_expense:,.2f}</h2></div>', unsafe_allow_html=True)
+    with mc3:
+        st.markdown(f'<div class="metric-card balance"><h3>💎 Net Balance</h3><h2>₹ {net:,.2f}</h2></div>', unsafe_allow_html=True)
     
     st.markdown("---")
+    rt1, rt2, rt3 = st.tabs(["💰 Income Report", "💸 Expense Report", "📈 Charts"])
     
-    # Income Report
-    report_tab1, report_tab2, report_tab3 = st.tabs(["💰 Income Report", "💸 Expense Report", "📈 Charts"])
-    
-    with report_tab1:
-        if bills_data:
-            df_income = pd.DataFrame([{
+    with rt1:
+        if bills:
+            df_i = pd.DataFrame([{
                 "Bill No": b.get('bill_no', ''),
-                "Manual Bill No": b.get('manual_bill_no', ''),
+                "Manual Bill": b.get('manual_bill_no', ''),
                 "Date": b.get('bill_date', ''),
-                "Pooja Type": b.get('pooja_type', ''),
-                "Devotee Type": b.get('devotee_type', ''),
+                "Pooja": b.get('pooja_type', ''),
+                "Type": b.get('devotee_type', ''),
                 "Amount": float(b.get('amount', 0))
-            } for b in bills_data])
+            } for b in bills])
+            st.dataframe(df_i, use_container_width=True, hide_index=True)
             
-            st.dataframe(df_income, use_container_width=True)
+            st.markdown("**Pooja-wise Summary:**")
+            summary = df_i.groupby('Pooja')['Amount'].agg(['sum', 'count']).reset_index()
+            summary.columns = ['Pooja Type', 'Total (₹)', 'Bills Count']
+            st.dataframe(summary, use_container_width=True, hide_index=True)
             
-            # Pooja-wise summary
-            st.markdown("### Pooja-wise Summary")
-            pooja_summary = df_income.groupby('Pooja Type')['Amount'].agg(['sum', 'count']).reset_index()
-            pooja_summary.columns = ['Pooja Type', 'Total Amount', 'Count']
-            st.dataframe(pooja_summary, use_container_width=True)
-            
-            # Download
-            csv = df_income.to_csv(index=False)
-            st.download_button("📥 Download Income Report", csv, "income_report.csv", "text/csv")
+            csv = df_i.to_csv(index=False)
+            st.download_button("📥 Download CSV", csv, "income_report.csv")
         else:
-            st.info("No income data for selected period")
+            st.info("No income data")
     
-    with report_tab2:
-        if expenses_data:
-            df_expenses = pd.DataFrame([{
+    with rt2:
+        if expenses:
+            df_e = pd.DataFrame([{
                 "Date": e.get('expense_date', ''),
                 "Type": e.get('expense_type', ''),
                 "Amount": float(e.get('amount', 0)),
                 "Description": e.get('description', '')
-            } for e in expenses_data])
+            } for e in expenses])
+            st.dataframe(df_e, use_container_width=True, hide_index=True)
             
-            st.dataframe(df_expenses, use_container_width=True)
+            st.markdown("**Type-wise Summary:**")
+            esummary = df_e.groupby('Type')['Amount'].agg(['sum', 'count']).reset_index()
+            esummary.columns = ['Type', 'Total (₹)', 'Count']
+            st.dataframe(esummary, use_container_width=True, hide_index=True)
             
-            # Type-wise summary
-            st.markdown("### Expense Type-wise Summary")
-            exp_summary = df_expenses.groupby('Type')['Amount'].agg(['sum', 'count']).reset_index()
-            exp_summary.columns = ['Expense Type', 'Total Amount', 'Count']
-            st.dataframe(exp_summary, use_container_width=True)
-            
-            csv = df_expenses.to_csv(index=False)
-            st.download_button("📥 Download Expense Report", csv, "expense_report.csv", "text/csv")
+            csv = df_e.to_csv(index=False)
+            st.download_button("📥 Download CSV", csv, "expense_report.csv")
         else:
-            st.info("No expense data for selected period")
+            st.info("No expense data")
     
-    with report_tab3:
-        if bills_data or expenses_data:
-            # Income vs Expenses Bar
+    with rt3:
+        if bills or expenses:
             chart_df = pd.DataFrame({
                 "Category": ["Income", "Expenses"],
-                "Amount": [total_income, total_expenses]
+                "Amount": [tot_income, tot_expense]
             })
             st.bar_chart(chart_df.set_index("Category"))
             
-            # Daily trend
-            if bills_data:
-                daily_income = {}
-                for b in bills_data:
+            if bills:
+                daily = {}
+                for b in bills:
                     d = b.get('bill_date', '')
-                    daily_income[d] = daily_income.get(d, 0) + float(b.get('amount', 0))
-                
-                if daily_income:
-                    trend_df = pd.DataFrame(list(daily_income.items()), columns=["Date", "Income"])
-                    trend_df = trend_df.sort_values("Date")
-                    st.line_chart(trend_df.set_index("Date"))
+                    daily[d] = daily.get(d, 0) + float(b.get('amount', 0))
+                if daily:
+                    tdf = pd.DataFrame(sorted(daily.items()), columns=["Date", "Income"])
+                    st.markdown("**Daily Income Trend:**")
+                    st.line_chart(tdf.set_index("Date"))
         else:
-            st.info("No data available for charts")
+            st.info("No data for charts")
+
 
 # ============================================================
-# SETTINGS PAGE
+# PAGE: SETTINGS
 # ============================================================
-def settings_page():
+def page_settings():
     st.markdown("""
     <div class="main-header">
         <h1>⚙️ Settings</h1>
-        <p>Configure pooja types, expense types, and news ticker</p>
+        <p>Configure pooja types, expense types & news</p>
     </div>
     """, unsafe_allow_html=True)
     
-    tab1, tab2, tab3 = st.tabs(["🙏 Pooja Types", "💸 Expense Types", "📢 News Ticker"])
+    t1, t2, t3 = st.tabs(["🙏 Pooja Types", "💸 Expense Types", "📢 News Ticker"])
     
-    # --- Pooja Types ---
-    with tab1:
-        st.markdown("### 🙏 Manage Pooja Types")
+    with t1:
+        st.markdown("### 🙏 Pooja Types")
+        pts = db_select("pooja_types")
+        for p in pts:
+            pc1, pc2 = st.columns([5, 1])
+            with pc1:
+                st.write(f"🙏 **{p['name']}** — ₹{p.get('amount', 0)}")
+            with pc2:
+                if st.button("🗑️", key=f"dpt_{p['id']}"):
+                    db_delete("pooja_types", "id", p['id'])
+                    st.rerun()
         
-        pooja_types = safe_query("pooja_types")
-        
-        if pooja_types:
-            for pt in pooja_types:
-                pt_col1, pt_col2, pt_col3 = st.columns([3, 1, 1])
-                with pt_col1:
-                    st.write(f"🙏 **{pt['name']}** - ₹{pt.get('amount', 0)}")
-                with pt_col3:
-                    if st.button("🗑️", key=f"del_pt_{pt['id']}"):
-                        safe_delete("pooja_types", "id", pt['id'])
-                        st.success("Deleted!")
-                        st.rerun()
-        
-        st.markdown("---")
-        with st.form("add_pooja_type", clear_on_submit=True):
-            pt_col1, pt_col2 = st.columns(2)
-            with pt_col1:
-                new_pt_name = st.text_input("Pooja Type Name")
-            with pt_col2:
-                new_pt_amount = st.number_input("Default Amount (₹)", min_value=0.0, step=10.0)
-            
-            if st.form_submit_button("➕ Add Pooja Type"):
-                if new_pt_name:
-                    safe_insert("pooja_types", {"name": new_pt_name, "amount": new_pt_amount})
-                    st.success(f"✅ Pooja type '{new_pt_name}' added!")
+        with st.form("add_pt", clear_on_submit=True):
+            apc1, apc2 = st.columns(2)
+            with apc1:
+                new_pt = st.text_input("Name")
+            with apc2:
+                new_pt_amt = st.number_input("Amount (₹)", min_value=0.0, step=10.0)
+            if st.form_submit_button("➕ Add"):
+                if new_pt.strip():
+                    db_insert("pooja_types", {"name": new_pt.strip(), "amount": new_pt_amt})
+                    st.success("✅ Added!")
                     st.rerun()
     
-    # --- Expense Types ---
-    with tab2:
-        st.markdown("### 💸 Manage Expense Types")
+    with t2:
+        st.markdown("### 💸 Expense Types")
+        ets = db_select("expense_types")
+        for e in ets:
+            ec1, ec2 = st.columns([5, 1])
+            with ec1:
+                st.write(f"💸 **{e['name']}**")
+            with ec2:
+                if st.button("🗑️", key=f"det_{e['id']}"):
+                    db_delete("expense_types", "id", e['id'])
+                    st.rerun()
         
-        expense_types = safe_query("expense_types")
-        
-        if expense_types:
-            for et in expense_types:
-                et_col1, et_col2 = st.columns([4, 1])
-                with et_col1:
-                    st.write(f"💸 **{et['name']}**")
-                with et_col2:
-                    if st.button("🗑️", key=f"del_et_{et['id']}"):
-                        safe_delete("expense_types", "id", et['id'])
-                        st.success("Deleted!")
-                        st.rerun()
-        
-        st.markdown("---")
-        with st.form("add_expense_type", clear_on_submit=True):
-            new_et_name = st.text_input("Expense Type Name")
-            if st.form_submit_button("➕ Add Expense Type"):
-                if new_et_name:
-                    safe_insert("expense_types", {"name": new_et_name})
-                    st.success(f"✅ Expense type '{new_et_name}' added!")
+        with st.form("add_et", clear_on_submit=True):
+            new_et = st.text_input("Expense Type Name")
+            if st.form_submit_button("➕ Add"):
+                if new_et.strip():
+                    db_insert("expense_types", {"name": new_et.strip()})
+                    st.success("✅ Added!")
                     st.rerun()
     
-    # --- News Ticker ---
-    with tab3:
-        st.markdown("### 📢 Manage News Ticker")
+    with t3:
+        st.markdown("### 📢 News Ticker")
+        news = db_select("news_ticker")
+        for n in news:
+            nc1, nc2, nc3 = st.columns([4, 1, 1])
+            with nc1:
+                icon = "🟢" if n.get('is_active') else "🔴"
+                st.write(f"{icon} {n['message']}")
+            with nc2:
+                if st.button("Toggle", key=f"tn_{n['id']}"):
+                    db_update("news_ticker", {"is_active": not n.get('is_active', True)}, "id", n['id'])
+                    st.rerun()
+            with nc3:
+                if st.button("🗑️", key=f"dn_{n['id']}"):
+                    db_delete("news_ticker", "id", n['id'])
+                    st.rerun()
         
-        news_items = safe_query("news_ticker")
-        
-        if news_items:
-            for n in news_items:
-                n_col1, n_col2, n_col3 = st.columns([4, 1, 1])
-                with n_col1:
-                    status = "🟢" if n.get('is_active') else "🔴"
-                    st.write(f"{status} {n['message']}")
-                with n_col2:
-                    if st.button("Toggle", key=f"toggle_n_{n['id']}"):
-                        safe_update("news_ticker", {"is_active": not n.get('is_active', True)}, "id", n['id'])
-                        st.rerun()
-                with n_col3:
-                    if st.button("🗑️", key=f"del_n_{n['id']}"):
-                        safe_delete("news_ticker", "id", n['id'])
-                        st.rerun()
-        
-        st.markdown("---")
         with st.form("add_news", clear_on_submit=True):
-            new_message = st.text_input("News Message")
-            if st.form_submit_button("➕ Add News"):
-                if new_message:
-                    safe_insert("news_ticker", {"message": new_message, "is_active": True})
-                    st.success("✅ News added!")
+            new_msg = st.text_input("News Message")
+            if st.form_submit_button("➕ Add"):
+                if new_msg.strip():
+                    db_insert("news_ticker", {"message": new_msg.strip(), "is_active": True})
+                    st.success("✅ Added!")
                     st.rerun()
 
+
 # ============================================================
-# USER CREATION PAGE
+# PAGE: USER MANAGEMENT
 # ============================================================
-def user_creation_page():
+def page_users():
     st.markdown("""
     <div class="main-header">
         <h1>👥 User Management</h1>
@@ -1285,58 +1105,52 @@ def user_creation_page():
     """, unsafe_allow_html=True)
     
     if st.session_state.user_role != 'admin':
-        st.error("❌ Only admin can manage users!")
+        st.error("❌ Admin access only!")
         return
     
-    tab1, tab2 = st.tabs(["➕ Create User", "📋 Manage Users"])
+    t1, t2 = st.tabs(["➕ Create User", "📋 Manage Users"])
     
-    with tab1:
+    with t1:
         with st.form("create_user", clear_on_submit=True):
-            col1, col2 = st.columns(2)
-            with col1:
-                new_username = st.text_input("👤 Username")
-                new_password = st.text_input("🔑 Password", type="password")
-            with col2:
-                confirm_password = st.text_input("🔑 Confirm Password", type="password")
+            c1, c2 = st.columns(2)
+            with c1:
+                new_user = st.text_input("👤 Username")
+                new_pass = st.text_input("🔑 Password", type="password")
+            with c2:
+                conf_pass = st.text_input("🔑 Confirm Password", type="password")
                 new_role = st.selectbox("🎭 Role", ["user", "admin"])
             
-            if st.form_submit_button("➕ Create User", use_container_width=True):
-                if not new_username or not new_password:
-                    st.error("❌ Username and password are required!")
-                elif new_password != confirm_password:
+            if st.form_submit_button("➕ Create", use_container_width=True):
+                if not new_user or not new_pass:
+                    st.error("❌ Fill all fields!")
+                elif new_pass != conf_pass:
                     st.error("❌ Passwords don't match!")
+                elif db_select("users", filters={"username": new_user}):
+                    st.error("❌ Username exists!")
                 else:
-                    existing = safe_query("users", filters={"username": new_username})
-                    if existing:
-                        st.error("❌ Username already exists!")
-                    else:
-                        safe_insert("users", {
-                            "username": new_username,
-                            "password_hash": new_password,
-                            "role": new_role
-                        })
-                        st.success(f"✅ User '{new_username}' created successfully!")
-                        st.rerun()
+                    db_insert("users", {"username": new_user, "password_hash": new_pass, "role": new_role})
+                    st.success(f"✅ User '{new_user}' created!")
+                    st.rerun()
     
-    with tab2:
-        users = safe_query("users")
-        if users:
-            for u in users:
-                u_col1, u_col2 = st.columns([4, 1])
-                with u_col1:
-                    role_icon = "👑" if u.get('role') == 'admin' else "👤"
-                    st.write(f"{role_icon} **{u['username']}** ({u.get('role', 'user')})")
-                with u_col2:
-                    if u['username'] != 'admin':
-                        if st.button("🗑️", key=f"del_user_{u['id']}"):
-                            safe_delete("users", "id", u['id'])
-                            st.success("✅ User deleted!")
-                            st.rerun()
+    with t2:
+        users = db_select("users")
+        for u in users:
+            uc1, uc2 = st.columns([5, 1])
+            with uc1:
+                icon = "👑" if u.get('role') == 'admin' else "👤"
+                st.write(f"{icon} **{u['username']}** ({u.get('role','user')})")
+            with uc2:
+                if u['username'] != 'admin':
+                    if st.button("🗑️", key=f"du_{u['id']}"):
+                        db_delete("users", "id", u['id'])
+                        st.success("Deleted!")
+                        st.rerun()
+
 
 # ============================================================
-# SAMAYA VAKUPPU PAGE
+# PAGE: SAMAYA VAKUPPU
 # ============================================================
-def samaya_vakuppu_page():
+def page_samaya_vakuppu():
     st.markdown("""
     <div class="main-header">
         <h1>📚 Samaya Vakuppu</h1>
@@ -1344,247 +1158,221 @@ def samaya_vakuppu_page():
     </div>
     """, unsafe_allow_html=True)
     
-    tab1, tab2 = st.tabs(["➕ Add Student", "📋 Student List"])
+    t1, t2 = st.tabs(["➕ Add Student", "📋 Student List"])
     
-    with tab1:
-        with st.form("samaya_vakuppu_form", clear_on_submit=True):
-            col1, col2 = st.columns(2)
-            
-            with col1:
+    with t1:
+        with st.form("sv_form", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            with c1:
                 sv_name = st.text_input("👤 Student Name *")
-                sv_dob = st.date_input("📅 Date of Birth", value=date(2010, 1, 1))
-                sv_address = st.text_area("🏠 Address")
-                sv_parent_type = st.selectbox("👪 Parent Type", ["Father", "Mother"])
-                sv_parent_name = st.text_input("👤 Parent Name")
+                sv_dob = st.date_input("📅 DOB", value=date(2010, 1, 1))
+                sv_addr = st.text_area("🏠 Address", height=80)
+                sv_ptype = st.selectbox("👪 Father / Mother", ["Father", "Mother"])
+                sv_pname = st.text_input("👤 Parent Name")
+            with c2:
+                sv_bdate = st.date_input("📅 Bond Issue Date")
+                sv_bank = st.text_input("🏦 Bond Issuing Bank")
+                sv_branch = st.text_input("🏦 Branch")
+                sv_bno = st.text_input("📋 Bond Number")
+                sv_bond_file = st.file_uploader("📄 Scanned Bond", type=['jpg', 'jpeg', 'png', 'pdf'], key="svb")
+                sv_photo = st.file_uploader("📷 Photo", type=['jpg', 'jpeg', 'png'], key="svp")
             
-            with col2:
-                sv_bond_issue_date = st.date_input("📅 Bond Issue Date", value=date.today())
-                sv_bond_bank = st.text_input("🏦 Bond Issuing Bank")
-                sv_bond_branch = st.text_input("🏦 Branch of Bank")
-                sv_bond_no = st.text_input("📋 Bond Number")
-                sv_scanned_bond = st.file_uploader("📄 Upload Scanned Bond", type=['jpg', 'jpeg', 'png', 'pdf'], key="sv_bond")
-                sv_photo = st.file_uploader("📷 Upload Photo", type=['jpg', 'jpeg', 'png'], key="sv_photo")
-            
-            if st.form_submit_button("✅ Register Student", use_container_width=True):
-                if sv_name:
-                    bond_url = None
-                    photo_url = None
-                    
-                    if sv_scanned_bond:
-                        bond_url = upload_to_supabase_storage(sv_scanned_bond, "bonds", f"samaya/{sv_name}_bond")
-                    if sv_photo:
-                        photo_url = upload_to_supabase_storage(sv_photo, "photos", f"samaya/{sv_name}_photo")
-                    
-                    safe_insert("samaya_vakuppu", {
-                        "student_name": sv_name,
+            if st.form_submit_button("✅ Register", use_container_width=True):
+                if sv_name.strip():
+                    db_insert("samaya_vakuppu", {
+                        "student_name": sv_name.strip(),
                         "dob": str(sv_dob),
-                        "address": sv_address,
-                        "parent_name": sv_parent_name,
-                        "parent_type": sv_parent_type,
-                        "bond_issue_date": str(sv_bond_issue_date),
-                        "scanned_bond_url": bond_url,
-                        "photo_url": photo_url,
-                        "bond_issuing_bank": sv_bond_bank,
-                        "branch_of_bank": sv_bond_branch,
-                        "bond_no": sv_bond_no
+                        "address": sv_addr,
+                        "parent_name": sv_pname,
+                        "parent_type": sv_ptype,
+                        "bond_issue_date": str(sv_bdate),
+                        "scanned_bond_url": file_to_base64(sv_bond_file),
+                        "photo_url": file_to_base64(sv_photo),
+                        "bond_issuing_bank": sv_bank,
+                        "branch_of_bank": sv_branch,
+                        "bond_no": sv_bno
                     })
-                    st.success(f"✅ Student '{sv_name}' registered successfully!")
+                    st.success(f"✅ '{sv_name}' registered!")
                     st.rerun()
                 else:
-                    st.error("❌ Student name is required!")
+                    st.error("❌ Name required!")
     
-    with tab2:
-        students = safe_query("samaya_vakuppu")
+    with t2:
+        students = db_select("samaya_vakuppu")
+        search_sv = st.text_input("🔍 Search", placeholder="Search by name")
+        if search_sv:
+            students = [s for s in students if search_sv.lower() in s.get('student_name', '').lower()]
         
-        if students:
-            search_student = st.text_input("🔍 Search Student", placeholder="Enter name to search")
-            
-            if search_student:
-                students = [s for s in students if search_student.lower() in s.get('student_name', '').lower()]
-            
-            for s in students:
-                with st.expander(f"👤 {s['student_name']} | Bond: {s.get('bond_no', 'N/A')}"):
-                    s_col1, s_col2 = st.columns([3, 1])
-                    
-                    with s_col1:
-                        st.write(f"**Name:** {s['student_name']}")
-                        st.write(f"**DOB:** {s.get('dob', 'N/A')}")
-                        st.write(f"**Address:** {s.get('address', 'N/A')}")
-                        st.write(f"**{s.get('parent_type', 'Parent')}:** {s.get('parent_name', 'N/A')}")
-                        st.write(f"**Bond Issue Date:** {s.get('bond_issue_date', 'N/A')}")
-                        st.write(f"**Bank:** {s.get('bond_issuing_bank', 'N/A')}")
-                        st.write(f"**Branch:** {s.get('branch_of_bank', 'N/A')}")
-                        st.write(f"**Bond No:** {s.get('bond_no', 'N/A')}")
-                    
-                    with s_col2:
-                        if s.get('photo_url') and s['photo_url'].startswith('data:'):
-                            st.markdown(f'<img src="{s["photo_url"]}" width="120" style="border-radius:10px;">', unsafe_allow_html=True)
-                    
-                    if st.button(f"🗑️ Delete", key=f"del_sv_{s['id']}"):
-                        safe_delete("samaya_vakuppu", "id", s['id'])
-                        st.success("✅ Student deleted!")
-                        st.rerun()
-        else:
-            st.info("No students registered yet")
+        for s in students:
+            with st.expander(f"👤 {s['student_name']} | Bond: {s.get('bond_no','N/A')}"):
+                sc1, sc2 = st.columns([3, 1])
+                with sc1:
+                    for label, key in [("Name", "student_name"), ("DOB", "dob"), ("Address", "address"),
+                                       ("Parent", "parent_name"), ("Parent Type", "parent_type"),
+                                       ("Bond Date", "bond_issue_date"), ("Bank", "bond_issuing_bank"),
+                                       ("Branch", "branch_of_bank"), ("Bond No", "bond_no")]:
+                        st.write(f"**{label}:** {s.get(key, 'N/A')}")
+                with sc2:
+                    if s.get('photo_url') and s['photo_url'].startswith('data:'):
+                        st.markdown(f'<img src="{s["photo_url"]}" width="120" style="border-radius:10px;">', unsafe_allow_html=True)
+                
+                if st.button("🗑️ Delete", key=f"dsv_{s['id']}"):
+                    db_delete("samaya_vakuppu", "id", s['id'])
+                    st.success("Deleted!")
+                    st.rerun()
+
 
 # ============================================================
-# THIRUMANA MANDAPAM PAGE
+# PAGE: THIRUMANA MANDAPAM
 # ============================================================
-def thirumana_mandapam_page():
+def page_thirumana_mandapam():
     st.markdown("""
     <div class="main-header">
         <h1>💒 Thirumana Mandapam</h1>
-        <p>Marriage hall booking and bond management</p>
+        <p>Marriage hall bond management</p>
     </div>
     """, unsafe_allow_html=True)
     
-    tab1, tab2 = st.tabs(["➕ Add Record", "📋 Records List"])
+    t1, t2 = st.tabs(["➕ Add Record", "📋 Records"])
     
-    with tab1:
-        with st.form("thirumana_form", clear_on_submit=True):
-            col1, col2 = st.columns(2)
-            
-            with col1:
+    with t1:
+        with st.form("tm_form", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            with c1:
                 tm_name = st.text_input("👤 Name *")
-                tm_address = st.text_area("🏠 Address")
-                tm_bond_no = st.text_input("📋 Bond Number")
-                tm_bond_date = st.date_input("📅 Bond Issued Date", value=date.today())
+                tm_addr = st.text_area("🏠 Address", height=80)
+                tm_bno = st.text_input("📋 Bond Number")
+                tm_bdate = st.date_input("📅 Bond Issued Date")
+            with c2:
+                tm_amt = st.number_input("💰 Amount (₹)", min_value=0.0, step=100.0)
+                tm_nbonds = st.number_input("📋 No. of Bonds", min_value=0, step=1)
+                tm_scan = st.file_uploader("📄 Scan Copy", type=['jpg', 'jpeg', 'png', 'pdf'], key="tms")
+                tm_photo = st.file_uploader("📷 Photo", type=['jpg', 'jpeg', 'png'], key="tmp")
             
-            with col2:
-                tm_amount = st.number_input("💰 Amount (₹)", min_value=0.0, step=100.0)
-                tm_no_bonds = st.number_input("📋 Number of Bonds", min_value=0, step=1)
-                tm_scan = st.file_uploader("📄 Scan Copy of Bond", type=['jpg', 'jpeg', 'png', 'pdf'], key="tm_scan")
-                tm_photo = st.file_uploader("📷 Photo", type=['jpg', 'jpeg', 'png'], key="tm_photo")
-            
-            if st.form_submit_button("✅ Save Record", use_container_width=True):
-                if tm_name:
-                    scan_url = None
-                    photo_url = None
-                    
-                    if tm_scan:
-                        scan_url = upload_to_supabase_storage(tm_scan, "bonds", f"thirumana/{tm_name}_scan")
-                    if tm_photo:
-                        photo_url = upload_to_supabase_storage(tm_photo, "photos", f"thirumana/{tm_name}_photo")
-                    
-                    safe_insert("thirumana_mandapam", {
-                        "name": tm_name,
-                        "address": tm_address,
-                        "bond_no": tm_bond_no,
-                        "bond_issued_date": str(tm_bond_date),
-                        "amount": tm_amount,
-                        "no_of_bonds": tm_no_bonds,
-                        "scan_copy_url": scan_url,
-                        "photo_url": photo_url
+            if st.form_submit_button("✅ Save", use_container_width=True):
+                if tm_name.strip():
+                    db_insert("thirumana_mandapam", {
+                        "name": tm_name.strip(),
+                        "address": tm_addr,
+                        "bond_no": tm_bno,
+                        "bond_issued_date": str(tm_bdate),
+                        "amount": tm_amt,
+                        "no_of_bonds": tm_nbonds,
+                        "scan_copy_url": file_to_base64(tm_scan),
+                        "photo_url": file_to_base64(tm_photo)
                     })
-                    st.success(f"✅ Record for '{tm_name}' saved successfully!")
+                    st.success(f"✅ '{tm_name}' saved!")
                     st.rerun()
                 else:
-                    st.error("❌ Name is required!")
+                    st.error("❌ Name required!")
     
-    with tab2:
-        records = safe_query("thirumana_mandapam")
+    with t2:
+        records = db_select("thirumana_mandapam")
+        search_tm = st.text_input("🔍 Search", placeholder="Search by name", key="stm")
+        if search_tm:
+            records = [r for r in records if search_tm.lower() in r.get('name', '').lower()]
         
-        if records:
-            search_tm = st.text_input("🔍 Search Records", placeholder="Enter name to search")
-            
-            if search_tm:
-                records = [r for r in records if search_tm.lower() in r.get('name', '').lower()]
-            
-            for r in records:
-                with st.expander(f"👤 {r['name']} | Bond: {r.get('bond_no', 'N/A')} | ₹{r.get('amount', 0)}"):
-                    r_col1, r_col2 = st.columns([3, 1])
-                    
-                    with r_col1:
-                        st.write(f"**Name:** {r['name']}")
-                        st.write(f"**Address:** {r.get('address', 'N/A')}")
-                        st.write(f"**Bond No:** {r.get('bond_no', 'N/A')}")
-                        st.write(f"**Bond Issued Date:** {r.get('bond_issued_date', 'N/A')}")
-                        st.write(f"**Amount:** ₹{r.get('amount', 0):,.2f}")
-                        st.write(f"**No. of Bonds:** {r.get('no_of_bonds', 'N/A')}")
-                    
-                    with r_col2:
-                        if r.get('photo_url') and r['photo_url'].startswith('data:'):
-                            st.markdown(f'<img src="{r["photo_url"]}" width="120" style="border-radius:10px;">', unsafe_allow_html=True)
-                    
-                    if st.button(f"🗑️ Delete", key=f"del_tm_{r['id']}"):
-                        safe_delete("thirumana_mandapam", "id", r['id'])
-                        st.success("✅ Record deleted!")
-                        st.rerun()
-        else:
-            st.info("No records found")
+        for r in records:
+            with st.expander(f"👤 {r['name']} | Bond: {r.get('bond_no','N/A')} | ₹{r.get('amount',0)}"):
+                rc1, rc2 = st.columns([3, 1])
+                with rc1:
+                    for label, key in [("Name", "name"), ("Address", "address"), ("Bond No", "bond_no"),
+                                       ("Bond Date", "bond_issued_date"), ("Amount", "amount"),
+                                       ("No. of Bonds", "no_of_bonds")]:
+                        val = r.get(key, 'N/A')
+                        if key == 'amount' and val != 'N/A':
+                            val = f"₹ {float(val):,.2f}"
+                        st.write(f"**{label}:** {val}")
+                with rc2:
+                    if r.get('photo_url') and r['photo_url'].startswith('data:'):
+                        st.markdown(f'<img src="{r["photo_url"]}" width="120" style="border-radius:10px;">', unsafe_allow_html=True)
+                
+                if st.button("🗑️ Delete", key=f"dtm_{r['id']}"):
+                    db_delete("thirumana_mandapam", "id", r['id'])
+                    st.success("Deleted!")
+                    st.rerun()
+
 
 # ============================================================
 # SIDEBAR NAVIGATION
 # ============================================================
-def sidebar_navigation():
+def render_sidebar():
     with st.sidebar:
         st.markdown(f"""
-        <div style="text-align:center; padding:15px; background:linear-gradient(135deg, #ff6b35, #f7c948); border-radius:10px; margin-bottom:15px;">
+        <div style="text-align:center; padding:15px; background:linear-gradient(135deg,#ff6b35,#f7c948);
+                    border-radius:10px; margin-bottom:15px;">
             <h2 style="color:#8B0000; margin:0;">🛕</h2>
-            <p style="color:#5a1a00; margin:5px 0 0 0; font-weight:600;">Temple Management</p>
+            <p style="color:#5a1a00; margin:3px 0 0 0; font-weight:600; font-size:0.9em;">Temple Management</p>
         </div>
         """, unsafe_allow_html=True)
         
-        st.markdown(f"👤 **{st.session_state.username}** ({st.session_state.user_role})")
+        st.markdown(f"""
+        <div style="color:#ccc; padding:5px 10px; font-size:0.85em;">
+            👤 <strong style="color:#f7c948;">{st.session_state.username}</strong> 
+            <span style="color:#888;">({st.session_state.user_role})</span>
+        </div>
+        """, unsafe_allow_html=True)
         st.markdown("---")
         
-        menu_items = {
-            "🏠 Dashboard": "Dashboard",
-            "👥 Devotee Enrollment": "Devotee Enrollment",
-            "🧾 Billing": "Billing",
-            "💸 Expenses": "Expenses",
-            "📊 Reports": "Reports",
-            "📚 Samaya Vakuppu": "Samaya Vakuppu",
-            "💒 Thirumana Mandapam": "Thirumana Mandapam",
-            "⚙️ Settings": "Settings",
-            "👥 User Management": "User Management"
-        }
+        pages = [
+            ("🏠 Dashboard", "Dashboard"),
+            ("👥 Devotee Enrollment", "Devotee Enrollment"),
+            ("🧾 Billing", "Billing"),
+            ("💸 Expenses", "Expenses"),
+            ("📊 Reports", "Reports"),
+            ("📚 Samaya Vakuppu", "Samaya Vakuppu"),
+            ("💒 Thirumana Mandapam", "Thirumana Mandapam"),
+            ("⚙️ Settings", "Settings"),
+            ("👥 User Management", "User Management"),
+        ]
         
-        for label, page in menu_items.items():
-            if page == "User Management" and st.session_state.user_role != 'admin':
+        for label, page_name in pages:
+            if page_name == "User Management" and st.session_state.user_role != 'admin':
                 continue
-            if st.button(label, key=f"nav_{page}", use_container_width=True):
-                st.session_state.current_page = page
+            if st.button(label, key=f"nav_{page_name}", use_container_width=True):
+                st.session_state.current_page = page_name
                 st.rerun()
         
         st.markdown("---")
-        
-        if st.button("🚪 Logout", use_container_width=True):
-            st.session_state.logged_in = False
-            st.session_state.username = ""
-            st.session_state.user_role = ""
-            st.session_state.current_page = "Dashboard"
+        if st.button("🚪 Logout", key="logout_btn", use_container_width=True):
+            for key in ['logged_in', 'username', 'user_role', 'current_page']:
+                st.session_state[key] = defaults[key]
             st.rerun()
+        
+        st.markdown("""
+        <div style="text-align:center; padding:20px 0 10px 0; color:#555; font-size:0.75em;">
+            Temple Management System v1.0<br>
+            © 2024 All Rights Reserved
+        </div>
+        """, unsafe_allow_html=True)
+
 
 # ============================================================
-# MAIN APPLICATION ROUTER
+# MAIN ROUTER
 # ============================================================
 def main():
     if not st.session_state.logged_in:
-        login_page()
+        page_login()
     else:
-        sidebar_navigation()
+        render_sidebar()
         
-        page = st.session_state.current_page
+        page_map = {
+            "Dashboard": page_dashboard,
+            "Devotee Enrollment": page_devotee_enrollment,
+            "Billing": page_billing,
+            "Expenses": page_expenses,
+            "Reports": page_reports,
+            "Samaya Vakuppu": page_samaya_vakuppu,
+            "Thirumana Mandapam": page_thirumana_mandapam,
+            "Settings": page_settings,
+            "User Management": page_users,
+        }
         
-        if page == "Dashboard":
-            dashboard_page()
-        elif page == "Devotee Enrollment":
-            devotee_enrollment_page()
-        elif page == "Billing":
-            billing_page()
-        elif page == "Expenses":
-            expenses_page()
-        elif page == "Reports":
-            reports_page()
-        elif page == "Samaya Vakuppu":
-            samaya_vakuppu_page()
-        elif page == "Thirumana Mandapam":
-            thirumana_mandapam_page()
-        elif page == "Settings":
-            settings_page()
-        elif page == "User Management":
-            user_creation_page()
+        current = st.session_state.current_page
+        if current in page_map:
+            page_map[current]()
+        else:
+            page_dashboard()
 
 if __name__ == "__main__":
     main()
