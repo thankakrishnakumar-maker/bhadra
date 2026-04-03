@@ -1,6 +1,9 @@
 streamlit
 supabase
-pandas
 fpdf2
+pandas
+python-barcode
+qrcode[pil]
+Pillow
 xlsxwriter
 
